@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/sdd-flow.schema.json",
+  "title": "SDD behavior flow",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "scenario", "lanes", "stories", "nodes", "edges"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "scenario": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "project", "domain", "title", "heading", "status", "defaultStory", "defaultPath", "defaultLevel", "selectedNode"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "project": { "$ref": "#/$defs/nonEmptyString" },
+        "domain": { "$ref": "#/$defs/nonEmptyString" },
+        "title": { "$ref": "#/$defs/nonEmptyString" },
+        "heading": { "$ref": "#/$defs/nonEmptyString" },
+        "status": { "$ref": "#/$defs/nonEmptyString" },
+        "defaultStory": { "$ref": "#/$defs/id" },
+        "defaultPath": { "enum": ["happy", "exception", "all"] },
+        "defaultLevel": { "type": "integer", "minimum": 1, "maximum": 3 },
+        "selectedNode": { "$ref": "#/$defs/id" }
+      }
+    },
+    "lanes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "label", "code", "subtitle"],
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "label": { "$ref": "#/$defs/nonEmptyString" },
+          "code": { "$ref": "#/$defs/nonEmptyString" },
+          "subtitle": { "$ref": "#/$defs/nonEmptyString" }
+        }
+      }
+    },
+    "stories": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "title", "state", "nodes"],
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "title": { "$ref": "#/$defs/nonEmptyString" },
+          "state": { "$ref": "#/$defs/nonEmptyString" },
+          "nodes": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/id" } }
+        }
+      }
+    },
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "lane", "column", "type", "path", "title", "technical", "detail"],
+        "properties": {
+          "id": { "$ref": "#/$defs/id" },
+          "lane": { "$ref": "#/$defs/id" },
+          "column": { "type": "integer", "minimum": 1 },
+          "type": { "enum": ["view", "action", "command", "integration", "decision", "event", "state"] },
+          "path": { "$ref": "#/$defs/path" },
+          "title": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["level1", "level2", "level3"],
+            "properties": {
+              "level1": { "$ref": "#/$defs/nonEmptyString" },
+              "level2": { "$ref": "#/$defs/nonEmptyString" },
+              "level3": { "$ref": "#/$defs/nonEmptyString" }
+            }
+          },
+          "technical": { "$ref": "#/$defs/nonEmptyString" },
+          "detail": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["description", "behavior", "assumption", "links"],
+            "properties": {
+              "description": { "$ref": "#/$defs/nonEmptyString" },
+              "behavior": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["given", "when", "then"],
+                "properties": {
+                  "given": { "$ref": "#/$defs/nonEmptyString" },
+                  "when": { "$ref": "#/$defs/nonEmptyString" },
+                  "then": { "$ref": "#/$defs/nonEmptyString" }
+                }
+              },
+              "assumption": { "$ref": "#/$defs/nonEmptyString" },
+              "links": { "type": "array", "items": { "$ref": "#/$defs/nonEmptyString" } }
+            }
+          }
+        }
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["from", "to", "type", "path"],
+        "properties": {
+          "from": { "$ref": "#/$defs/id" },
+          "to": { "$ref": "#/$defs/id" },
+          "type": { "enum": ["sequence", "triggers", "produces", "reads", "writes", "requests", "responds", "transitions", "returns"] },
+          "path": { "$ref": "#/$defs/path" },
+          "label": { "$ref": "#/$defs/nonEmptyString" },
+          "loop": { "type": "boolean" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "id": { "type": "string", "minLength": 1, "pattern": "^[A-Za-z][A-Za-z0-9_-]*$" },
+    "nonEmptyString": { "type": "string", "minLength": 1 },
+    "path": { "enum": ["happy", "exception", "both"] }
+  }
+}

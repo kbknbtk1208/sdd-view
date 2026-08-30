@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="ユーザーストーリーとシステムの振る舞いを、タイムライン上で確認するSDDプロトタイプ"
+    />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23172036'/%3E%3Cpath d='M7 10h18M10 16h15M14 22h11' stroke='white' stroke-width='2'/%3E%3C/svg%3E" />
+    <title>Trace — 振る舞い仕様ビュー</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#flow-canvas">フローへ移動</a>
+
+    <header class="app-header">
+      <div class="brand" aria-label="Trace ホーム">
+        <div class="brand-mark" aria-hidden="true">
+          <span></span><span></span><span></span>
+        </div>
+        <div>
+          <p class="brand-name">TRACE</p>
+          <p class="brand-subtitle">Behavior specification</p>
+        </div>
+      </div>
+
+      <div class="scenario-heading">
+        <div class="breadcrumbs" aria-label="現在位置">
+          <span id="scenario-project">会員ポータル</span>
+          <span aria-hidden="true">/</span>
+          <span id="scenario-domain">認証</span>
+        </div>
+        <div class="title-line">
+          <h1 id="scenario-title">仕様を読み込み中</h1>
+          <span class="status-chip" id="scenario-status"><span></span>読み込み中</span>
+        </div>
+      </div>
+
+      <div class="header-actions">
+        <span class="spec-source" id="spec-source" title="読み込み中">読み込み中</span>
+        <button class="quiet-button source-button" id="load-spec-button" type="button">
+          <span aria-hidden="true">⇩</span>
+          YAMLを開く
+        </button>
+        <input id="spec-file-input" type="file" accept=".yaml,.yml,.json,application/yaml,application/json" hidden />
+        <button class="icon-button" id="help-button" type="button" aria-label="凡例を表示" title="凡例を表示">
+          <span aria-hidden="true">?</span>
+        </button>
+        <button class="primary-button" id="review-button" type="button">
+          <span class="button-icon" aria-hidden="true">✓</span>
+          レビューを完了
+        </button>
+      </div>
+    </header>
+
+    <div class="app-shell">
+      <aside class="story-panel" aria-labelledby="story-panel-title">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">SCOPE</p>
+            <h2 id="story-panel-title">ユーザーストーリー</h2>
+          </div>
+          <span class="count-badge" id="story-count">0</span>
+        </div>
+
+        <div class="story-list" id="story-list"></div>
+
+        <div class="scope-note">
+          <div class="scope-note-icon" aria-hidden="true">↗</div>
+          <div>
+            <p>選択範囲を強調中</p>
+            <span>このストーリーが触れる仕様だけを濃く表示します。</span>
+          </div>
+        </div>
+
+        <div class="panel-footer">
+          <p class="eyebrow">TRACE COVERAGE</p>
+          <div class="coverage-row">
+            <span>仕様への接続</span>
+            <strong id="coverage-value">100%</strong>
+          </div>
+          <div class="coverage-track" aria-hidden="true"><span id="coverage-bar"></span></div>
+          <p id="coverage-caption">8 / 8 ノードを追跡可能</p>
+        </div>
+      </aside>
+
+      <main class="workspace">
+        <section class="toolbar" aria-label="表示設定">
+          <div class="segmented-control" id="path-filter" aria-label="表示する経路">
+            <button type="button" data-path="happy" class="is-active" aria-pressed="true">正常系</button>
+            <button type="button" data-path="exception" aria-pressed="false">異常系</button>
+            <button type="button" data-path="all" aria-pressed="false">すべて</button>
+          </div>
+
+          <div class="toolbar-divider" aria-hidden="true"></div>
+
+          <label class="select-label" for="zoom-level">表示レベル</label>
+          <select id="zoom-level" class="level-select">
+            <option value="1">L1 ユーザーフロー</option>
+            <option value="2" selected>L2 振る舞い</option>
+            <option value="3">L3 技術フロー</option>
+          </select>
+
+          <button class="quiet-button" id="fit-button" type="button">
+            <span aria-hidden="true">⊙</span>
+            全体を表示
+          </button>
+
+          <div class="toolbar-spacer"></div>
+
+          <div class="reviewers" aria-label="レビュー参加者">
+            <span class="avatar avatar-a">NK</span>
+            <span class="avatar avatar-b">AO</span>
+            <span class="avatar avatar-c">MY</span>
+            <span class="reviewer-count">+2</span>
+          </div>
+          <button class="quiet-button annotation-button" id="annotation-button" type="button">
+            <span class="annotation-dot" aria-hidden="true"></span>
+            注釈 3
+          </button>
+        </section>
+
+        <section class="flow-section" aria-labelledby="flow-title">
+          <div class="flow-intro">
+            <div>
+              <p class="eyebrow" id="scenario-eyebrow">SCENARIO</p>
+              <h2 id="flow-title">仕様を読み込み中</h2>
+            </div>
+            <div class="flow-summary" id="flow-summary">
+              <span><b>11</b> ノード</span>
+              <span><b>4</b> レーン</span>
+              <span><b>1</b> 判断</span>
+            </div>
+          </div>
+
+          <div class="trace-ruler" aria-hidden="true">
+            <span>START</span>
+            <div class="ruler-line"><i></i></div>
+            <span>USER VALUE</span>
+          </div>
+
+          <div class="flow-scroll" id="flow-scroll" tabindex="0" aria-label="ログインの振る舞いフロー。横方向にスクロールできます">
+            <div class="flow-canvas" id="flow-canvas">
+              <svg class="edge-layer" id="edge-layer" aria-hidden="true">
+                <defs>
+                  <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
+                    <path d="M0,0 L8,4 L0,8 Z" fill="context-stroke"></path>
+                  </marker>
+                  <marker id="arrow-muted" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
+                    <path d="M0,0 L8,4 L0,8 Z" fill="#aab4c8"></path>
+                  </marker>
+                </defs>
+              </svg>
+              <div class="story-bracket" id="story-bracket" aria-hidden="true">
+                <span></span>
+              </div>
+              <div id="lane-container"></div>
+            </div>
+          </div>
+
+          <div class="scroll-hint" id="scroll-hint" aria-hidden="true">
+            <span>Shift + ホイール</span> またはドラッグで横移動
+          </div>
+        </section>
+      </main>
+
+      <aside class="detail-panel" id="detail-panel" aria-labelledby="detail-title">
+        <div class="detail-topline">
+          <p class="eyebrow">NODE DETAIL</p>
+          <button class="icon-button detail-close" id="detail-close" type="button" aria-label="詳細を閉じる">×</button>
+        </div>
+        <div id="detail-content"></div>
+      </aside>
+    </div>
+
+    <div class="popover" id="legend-popover" role="dialog" aria-modal="false" aria-labelledby="legend-title" hidden>
+      <div class="popover-heading">
+        <h2 id="legend-title">図の読み方</h2>
+        <button class="icon-button" id="legend-close" type="button" aria-label="凡例を閉じる">×</button>
+      </div>
+      <div class="legend-list">
+        <span class="legend-shape type-view"></span><p><b>ビュー</b> ユーザーが見る状態</p>
+        <span class="legend-shape type-action"></span><p><b>操作</b> ユーザーの行動</p>
+        <span class="legend-shape type-command"></span><p><b>コマンド</b> システムへの意図</p>
+        <span class="legend-shape type-event"></span><p><b>イベント</b> 確定した事実</p>
+        <span class="legend-shape type-state"></span><p><b>状態</b> 保存された情報</p>
+      </div>
+      <p class="legend-note">線は因果関係を表します。ノードを選ぶと、詳細な前提・結果・関連仕様を確認できます。</p>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <div class="spec-error" id="spec-error" role="alertdialog" aria-modal="true" aria-labelledby="spec-error-title" hidden>
+      <div class="spec-error-card">
+        <div class="spec-error-mark" aria-hidden="true">!</div>
+        <div class="spec-error-body">
+          <p class="eyebrow">SPEC LOAD ERROR</p>
+          <h2 id="spec-error-title">仕様ファイルを読み込めません</h2>
+          <p><code id="spec-error-source"></code> の内容を確認してください。現在のビューは変更していません。</p>
+          <ul id="spec-error-list"></ul>
+          <button class="primary-button" id="spec-error-close" type="button">ビューに戻る</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="./src/app.js"></script>
+  </body>
+</html>

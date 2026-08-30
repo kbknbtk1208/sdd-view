@@ -24,6 +24,8 @@ npm run build
 - ユーザーストーリーごとの変更範囲の強調
 - 正常系・異常系・全経路の切り替え
 - ユーザーフロー・振る舞い・技術フローの3段階表示
+- 親ノードを複数の子ノードとエッジへ展開するカットアウェイ表示
+- 全体・展開・フォーカスの3つの深さ切り替え
 - ノード選択によるGiven-When-Then、Assumption、関連仕様の確認
 - フローのドラッグスクロール
 - 画面上の「YAMLを開く」、またはドラッグ&ドロップによる仕様の差し替え
@@ -39,8 +41,8 @@ URLから仕様を指定することもできます。
 http://127.0.0.1:4173/?spec=/specs/password-reset.yaml
 ```
 
-YAMLの形式、ノード種別、エッジ種別については [`docs/spec-format.md`](./docs/spec-format.md) を参照してください。JSON Schemaは [`schema/sdd-flow.schema.json`](./schema/sdd-flow.schema.json) です。
+YAMLの形式、ノード種別、エッジ種別については [`docs/spec-format.md`](./docs/spec-format.md) を参照してください。ノードを分解する判断基準は [`docs/hierarchy-guidelines.md`](./docs/hierarchy-guidelines.md) にまとめています。JSON Schemaは [`schema/sdd-flow.schema.json`](./schema/sdd-flow.schema.json) です。
 
 JSONはYAMLのサブセットとして同じローダーで読み込めます。
 
-主要な処理は `src/app.js` にあり、表示データは含んでいません。
+主要な処理は `src/app.js` にあり、表示データは含んでいません。仕様ファイルは `schemaVersion: 2` のみを受け付けます。

@@ -1,18 +1,19 @@
 # 仕様ファイル形式
 
-`schemaVersion: 1` のYAMLまたはJSONを読み込み、シナリオ、レーン、ユーザーストーリー、ノード、エッジからビューを生成します。
+`schemaVersion: 2` のYAMLまたはJSONを読み込み、シナリオ、レーン、ユーザーストーリー、ノード、エッジ、サブフローからビューを生成します。旧バージョンは読み込みません。
 
 ## 全体構造
 
 ```yaml
 # yaml-language-server: $schema=../schema/sdd-flow.schema.json
-schemaVersion: 1
+schemaVersion: 2
 
 scenario: {}
 lanes: []
 stories: []
 nodes: []
 edges: []
+subflows: {} # 詳細フローがない場合もキーは必須
 ```
 
 `scenario` では画面タイトルと初期表示を指定します。
@@ -66,6 +67,7 @@ nodes:
     column: 3
     type: command
     path: both
+    expands: credential-entry # 任意。詳細フローのID
     title:
       level1: ログインを確認
       level2: ログインを要求する
@@ -95,6 +97,53 @@ nodes:
 
 `path` は `happy`、`exception`、両方に現れる `both` のいずれかです。
 
+## 複合ノードとサブフロー
+
+全体像では1つに見せたい操作を、実装・テスト時には複数ノードへ分解できます。親ノードの `expands` と、ルート直下の `subflows` のキーを一致させます。
+
+```yaml
+nodes:
+  - id: login-action
+    lane: browser
+    column: 2
+    type: action
+    path: both
+    expands: credential-entry
+    # title / technical / detail は通常のノードと同じ
+
+subflows:
+  credential-entry:
+    title: 認証情報を入力して送信する
+    summary: 入力、形式検証、ボタン活性化、送信まで
+    span: 6 # タイムライン内で展開したときに使う列数（2〜8）
+    tracks:
+      - id: input
+        label: ユーザー入力
+        code: IN
+      - id: rule
+        label: クライアント検証
+        code: RULE
+    nodes:
+      - id: member-id-input
+        track: input
+        column: 1
+        type: action
+        path: both
+        # title / technical / detail は通常のノードと同じ
+    edges:
+      - from: member-id-input
+        to: member-id-format
+        type: triggers
+        path: both
+```
+
+- `track` はサブフロー内だけの小さなレーンです。
+- 子ノードのIDは、トップレベルと他のサブフローを含めて一意にします。
+- ユーザーストーリーには親ノードだけを指定します。子ノードは親のスコープを継承します。
+- 現在のプロトタイプは「トップレベル → 子フロー」の2階層表示です。
+
+どのノードを親として残し、どこから子ノードへ分解するかは、[階層構造の設計ガイド](./hierarchy-guidelines.md)を参照してください。
+
 ## エッジ
 
 ```yaml
@@ -122,6 +171,7 @@ edges:
 | `responds` | 要求へ応答する |
 | `transitions` | 画面や状態を遷移する |
 | `returns` | 前の操作へ戻る |
+| `enables` | 条件成立によって操作や状態を有効にする |
 
 戻り線を下側へ迂回させる場合は `loop: true` を指定します。分岐条件など短い表示には `label` を使用します。
 

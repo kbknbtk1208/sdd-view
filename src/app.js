@@ -2,7 +2,7 @@ import { load as parseYaml } from "js-yaml";
 import bundledSpecYaml from "../specs/login.yaml?raw";
 
 const NODE_TYPES = new Set(["view", "action", "command", "integration", "decision", "event", "state"]);
-const EDGE_TYPES = new Set(["sequence", "triggers", "produces", "reads", "writes", "requests", "responds", "transitions", "returns"]);
+const EDGE_TYPES = new Set(["sequence", "triggers", "produces", "reads", "writes", "requests", "responds", "transitions", "returns", "enables"]);
 const NODE_PATHS = new Set(["happy", "exception", "both"]);
 const DEFAULT_PATHS = new Set(["happy", "exception", "all"]);
 const ID_PATTERN = /^[A-Za-z][A-Za-z0-9_-]*$/;
@@ -27,6 +27,7 @@ const edgeTypeLabels = {
   responds: "応答",
   transitions: "遷移",
   returns: "戻る",
+  enables: "有効化",
 };
 
 const lanePalette = [
@@ -43,6 +44,7 @@ let lanes = [];
 let stories = [];
 let nodes = [];
 let edges = [];
+let subflows = [];
 
 const state = {
   storyId: null,
@@ -50,6 +52,9 @@ const state = {
   level: 2,
   selectedNodeId: null,
   sourceName: "",
+  depth: "overview",
+  expandedNodeIds: new Set(),
+  focusSubflowId: null,
 };
 
 const laneContainer = document.querySelector("#lane-container");
@@ -63,6 +68,7 @@ const flowCanvas = document.querySelector("#flow-canvas");
 const toast = document.querySelector("#toast");
 const specFileInput = document.querySelector("#spec-file-input");
 const specError = document.querySelector("#spec-error");
+const focusBreadcrumb = document.querySelector("#focus-breadcrumb");
 
 class SpecValidationError extends Error {
   constructor(errors) {
@@ -125,9 +131,62 @@ function validateSpec(raw) {
     return value;
   };
 
+  const optionalIdAt = (value, path) => {
+    if (value === undefined) return "";
+    return idAt(value, path);
+  };
+
+  const normalizeNode = (nodeValue, path, placementKey) => {
+    const node = objectAt(nodeValue, path);
+    const title = objectAt(node.title, `${path}.title`);
+    const detail = objectAt(node.detail, `${path}.detail`);
+    const behavior = objectAt(detail.behavior, `${path}.detail.behavior`);
+    const column = Number(node.column);
+    if (!Number.isInteger(column) || column < 1) {
+      errors.push(`${path}.column: 1以上の整数が必要です`);
+    }
+
+    return {
+      id: idAt(node.id, `${path}.id`),
+      lane: placementKey === "lane" ? idAt(node.lane, `${path}.lane`) : "",
+      track: placementKey === "track" ? idAt(node.track, `${path}.track`) : "",
+      column: Number.isInteger(column) && column > 0 ? column : 1,
+      type: enumAt(node.type, NODE_TYPES, `${path}.type`),
+      path: enumAt(node.path, NODE_PATHS, `${path}.path`),
+      expands: optionalIdAt(node.expands, `${path}.expands`),
+      title: {
+        1: stringAt(title.level1, `${path}.title.level1`),
+        2: stringAt(title.level2, `${path}.title.level2`),
+        3: stringAt(title.level3, `${path}.title.level3`),
+      },
+      tech: stringAt(node.technical, `${path}.technical`),
+      description: stringAt(detail.description, `${path}.detail.description`),
+      given: stringAt(behavior.given, `${path}.detail.behavior.given`),
+      when: stringAt(behavior.when, `${path}.detail.behavior.when`),
+      then: stringAt(behavior.then, `${path}.detail.behavior.then`),
+      assumption: stringAt(detail.assumption, `${path}.detail.assumption`),
+      tags: arrayAt(detail.links, `${path}.detail.links`, true).map((link, linkIndex) => stringAt(link, `${path}.detail.links[${linkIndex}]`)),
+      parentId: "",
+      subflowId: "",
+      isChild: placementKey === "track",
+    };
+  };
+
+  const normalizeEdge = (edgeValue, path) => {
+    const edge = objectAt(edgeValue, path);
+    return {
+      from: idAt(edge.from, `${path}.from`),
+      to: idAt(edge.to, `${path}.to`),
+      type: enumAt(edge.type, EDGE_TYPES, `${path}.type`),
+      path: enumAt(edge.path, NODE_PATHS, `${path}.path`),
+      label: edge.label === undefined ? "" : stringAt(edge.label, `${path}.label`),
+      loop: edge.loop === true,
+    };
+  };
+
   const root = objectAt(raw, "root");
-  if (root.schemaVersion !== 1) {
-    errors.push("schemaVersion: 現在サポートしている値は 1 です");
+  if (root.schemaVersion !== 2) {
+    errors.push("schemaVersion: 現在サポートしている値は 2 です");
   }
 
   const scenarioRaw = objectAt(root.scenario, "scenario");
@@ -169,46 +228,35 @@ function validateSpec(raw) {
     };
   });
 
-  const normalizedNodes = arrayAt(root.nodes, "nodes").map((nodeValue, index) => {
-    const node = objectAt(nodeValue, `nodes[${index}]`);
-    const title = objectAt(node.title, `nodes[${index}].title`);
-    const detail = objectAt(node.detail, `nodes[${index}].detail`);
-    const behavior = objectAt(detail.behavior, `nodes[${index}].detail.behavior`);
-    const column = Number(node.column);
-    if (!Number.isInteger(column) || column < 1) {
-      errors.push(`nodes[${index}].column: 1以上の整数が必要です`);
+  const normalizedNodes = arrayAt(root.nodes, "nodes").map((nodeValue, index) => normalizeNode(nodeValue, `nodes[${index}]`, "lane"));
+  const normalizedEdges = arrayAt(root.edges, "edges", true).map((edgeValue, index) => normalizeEdge(edgeValue, `edges[${index}]`));
+
+  const subflowsRaw = objectAt(root.subflows, "subflows");
+  const normalizedSubflows = Object.entries(subflowsRaw).map(([subflowKey, subflowValue]) => {
+    const path = `subflows.${subflowKey}`;
+    const subflow = objectAt(subflowValue, path);
+    const span = Number(subflow.span ?? 5);
+    if (!Number.isInteger(span) || span < 2 || span > 8) {
+      errors.push(`${path}.span: 2〜8の整数が必要です`);
     }
+    const tracks = arrayAt(subflow.tracks, `${path}.tracks`).map((trackValue, index) => {
+      const track = objectAt(trackValue, `${path}.tracks[${index}]`);
+      return {
+        id: idAt(track.id, `${path}.tracks[${index}].id`),
+        label: stringAt(track.label, `${path}.tracks[${index}].label`),
+        code: stringAt(track.code, `${path}.tracks[${index}].code`),
+      };
+    });
 
     return {
-      id: idAt(node.id, `nodes[${index}].id`),
-      lane: idAt(node.lane, `nodes[${index}].lane`),
-      column: Number.isInteger(column) && column > 0 ? column : 1,
-      type: enumAt(node.type, NODE_TYPES, `nodes[${index}].type`),
-      path: enumAt(node.path, NODE_PATHS, `nodes[${index}].path`),
-      title: {
-        1: stringAt(title.level1, `nodes[${index}].title.level1`),
-        2: stringAt(title.level2, `nodes[${index}].title.level2`),
-        3: stringAt(title.level3, `nodes[${index}].title.level3`),
-      },
-      tech: stringAt(node.technical, `nodes[${index}].technical`),
-      description: stringAt(detail.description, `nodes[${index}].detail.description`),
-      given: stringAt(behavior.given, `nodes[${index}].detail.behavior.given`),
-      when: stringAt(behavior.when, `nodes[${index}].detail.behavior.when`),
-      then: stringAt(behavior.then, `nodes[${index}].detail.behavior.then`),
-      assumption: stringAt(detail.assumption, `nodes[${index}].detail.assumption`),
-      tags: arrayAt(detail.links, `nodes[${index}].detail.links`, true).map((link, linkIndex) => stringAt(link, `nodes[${index}].detail.links[${linkIndex}]`)),
-    };
-  });
-
-  const normalizedEdges = arrayAt(root.edges, "edges", true).map((edgeValue, index) => {
-    const edge = objectAt(edgeValue, `edges[${index}]`);
-    return {
-      from: idAt(edge.from, `edges[${index}].from`),
-      to: idAt(edge.to, `edges[${index}].to`),
-      type: enumAt(edge.type, EDGE_TYPES, `edges[${index}].type`),
-      path: enumAt(edge.path, NODE_PATHS, `edges[${index}].path`),
-      label: edge.label === undefined ? "" : stringAt(edge.label, `edges[${index}].label`),
-      loop: edge.loop === true,
+      id: idAt(subflowKey, path),
+      title: stringAt(subflow.title, `${path}.title`),
+      summary: stringAt(subflow.summary, `${path}.summary`),
+      span: Number.isInteger(span) && span >= 2 && span <= 8 ? span : 5,
+      tracks,
+      nodes: arrayAt(subflow.nodes, `${path}.nodes`).map((nodeValue, index) => normalizeNode(nodeValue, `${path}.nodes[${index}]`, "track")),
+      edges: arrayAt(subflow.edges, `${path}.edges`, true).map((edgeValue, index) => normalizeEdge(edgeValue, `${path}.edges[${index}]`)),
+      parentId: "",
     };
   });
 
@@ -224,10 +272,48 @@ function validateSpec(raw) {
   const laneIds = checkUniqueIds(normalizedLanes, "lanes");
   const storyIds = checkUniqueIds(normalizedStories, "stories");
   const nodeIds = checkUniqueIds(normalizedNodes, "nodes");
+  const subflowIds = checkUniqueIds(normalizedSubflows, "subflows");
 
   normalizedNodes.forEach((node) => {
     if (!laneIds.has(node.lane)) errors.push(`nodes.${node.id}.lane: レーン「${node.lane}」が存在しません`);
+    if (!node.expands) return;
+    const subflow = normalizedSubflows.find((item) => item.id === node.expands);
+    if (!subflowIds.has(node.expands)) {
+      errors.push(`nodes.${node.id}.expands: サブフロー「${node.expands}」が存在しません`);
+      return;
+    }
+    if (subflow.parentId) {
+      errors.push(`subflows.${subflow.id}: 複数の親ノードから参照されています`);
+      return;
+    }
+    subflow.parentId = node.id;
+    subflow.nodes.forEach((childNode) => {
+      childNode.parentId = node.id;
+      childNode.subflowId = subflow.id;
+    });
   });
+
+  normalizedSubflows.forEach((subflow) => {
+    if (!subflow.parentId) errors.push(`subflows.${subflow.id}: expandsで参照する親ノードが必要です`);
+    const trackIds = checkUniqueIds(subflow.tracks, `subflows.${subflow.id}.tracks`);
+    checkUniqueIds(subflow.nodes, `subflows.${subflow.id}.nodes`);
+    const childIds = new Set(subflow.nodes.map((node) => node.id));
+    subflow.nodes.forEach((node) => {
+      if (!trackIds.has(node.track)) {
+        errors.push(`subflows.${subflow.id}.nodes.${node.id}.track: トラック「${node.track}」が存在しません`);
+      }
+      if (node.expands) {
+        errors.push(`subflows.${subflow.id}.nodes.${node.id}.expands: 現在のビューは2階層目の展開に対応していません`);
+      }
+    });
+    subflow.edges.forEach((edge, index) => {
+      if (!childIds.has(edge.from)) errors.push(`subflows.${subflow.id}.edges[${index}].from: 子ノード「${edge.from}」が存在しません`);
+      if (!childIds.has(edge.to)) errors.push(`subflows.${subflow.id}.edges[${index}].to: 子ノード「${edge.to}」が存在しません`);
+    });
+  });
+
+  const allNodes = [...normalizedNodes, ...normalizedSubflows.flatMap((subflow) => subflow.nodes)];
+  const allNodeIds = checkUniqueIds(allNodes, "nodes + subflows.nodes");
 
   normalizedStories.forEach((story) => {
     const duplicateNodeIds = story.nodeIds.filter((id, index) => story.nodeIds.indexOf(id) !== index);
@@ -245,28 +331,30 @@ function validateSpec(raw) {
   if (!storyIds.has(normalizedScenario.defaultStory)) {
     errors.push(`scenario.defaultStory: ストーリー「${normalizedScenario.defaultStory}」が存在しません`);
   }
-  if (!nodeIds.has(normalizedScenario.selectedNode)) {
+  if (!allNodeIds.has(normalizedScenario.selectedNode)) {
     errors.push(`scenario.selectedNode: ノード「${normalizedScenario.selectedNode}」が存在しません`);
   }
 
-  const selectedNode = normalizedNodes.find((node) => node.id === normalizedScenario.selectedNode);
+  const selectedNode = allNodes.find((node) => node.id === normalizedScenario.selectedNode);
   if (selectedNode && normalizedScenario.defaultPath !== "all" && !["both", normalizedScenario.defaultPath].includes(selectedNode.path)) {
     errors.push("scenario.selectedNode: defaultPathでは非表示になるノードです");
   }
   const defaultStory = normalizedStories.find((story) => story.id === normalizedScenario.defaultStory);
-  if (defaultStory && !defaultStory.nodeIds.includes(normalizedScenario.selectedNode)) {
+  const selectedScopeId = selectedNode?.isChild ? selectedNode.parentId : selectedNode?.id;
+  if (defaultStory && !defaultStory.nodeIds.includes(selectedScopeId)) {
     errors.push("scenario.selectedNode: defaultStoryの範囲に含まれていません");
   }
 
   if (errors.length) throw new SpecValidationError(errors);
 
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     scenario: normalizedScenario,
     lanes: normalizedLanes,
     stories: normalizedStories,
     nodes: normalizedNodes,
     edges: normalizedEdges,
+    subflows: normalizedSubflows,
   };
 }
 
@@ -276,11 +364,15 @@ function applySpec(spec, sourceName) {
   stories = spec.stories;
   nodes = spec.nodes;
   edges = spec.edges;
+  subflows = spec.subflows;
   state.storyId = scenario.defaultStory;
   state.path = scenario.defaultPath;
   state.level = scenario.defaultLevel;
   state.selectedNodeId = scenario.selectedNode;
   state.sourceName = sourceName;
+  state.depth = "overview";
+  state.expandedNodeIds = new Set();
+  state.focusSubflowId = null;
 
   const maxColumn = Math.max(...nodes.map((node) => node.column), 1);
   flowCanvas.style.setProperty("--column-count", String(maxColumn));
@@ -307,10 +399,11 @@ function applySpec(spec, sourceName) {
   document.querySelector("#zoom-level").value = String(state.level);
   document.body.classList.remove("level-1", "level-2", "level-3");
   document.body.classList.add(`level-${state.level}`);
+  document.body.classList.remove("is-focus-mode");
 
   renderStories();
   renderFlow();
-  renderDetail(nodes.find((node) => node.id === state.selectedNodeId));
+  renderDetail(getNodeById(state.selectedNodeId));
   showToast(`${sourceName} を読み込みました`);
 }
 
@@ -346,11 +439,77 @@ function formatYamlError(error) {
   return error?.message ?? "YAMLを読み込めませんでした";
 }
 
-function getVisibleNodes() {
-  return nodes.filter((node) => {
-    if (state.path === "all") return true;
-    return node.path === "both" || node.path === state.path;
+function isVisibleByPath(item) {
+  return state.path === "all" || item.path === "both" || item.path === state.path;
+}
+
+function getVisibleNodes(candidates = nodes) {
+  return candidates.filter(isVisibleByPath);
+}
+
+function getSubflow(subflowId) {
+  return subflows.find((subflow) => subflow.id === subflowId);
+}
+
+function getNodeById(nodeId) {
+  if (!nodeId) return null;
+  return nodes.find((node) => node.id === nodeId)
+    ?? subflows.flatMap((subflow) => subflow.nodes).find((node) => node.id === nodeId)
+    ?? null;
+}
+
+function getParentNode(node) {
+  if (!node) return null;
+  return node.isChild
+    ? nodes.find((candidate) => candidate.id === node.parentId) ?? null
+    : node;
+}
+
+function getSelectedCompoundParent() {
+  const story = stories.find((item) => item.id === state.storyId);
+  const selected = getNodeById(state.selectedNodeId);
+  const selectedParent = getParentNode(selected);
+  if (selectedParent?.expands && isNodeInStory(selectedParent.id, story)) return selectedParent;
+
+  const expandedId = [...state.expandedNodeIds].find((nodeId) => nodes.some((node) => node.id === nodeId && isVisibleByPath(node) && isNodeInStory(node.id, story)));
+  if (expandedId) return getNodeById(expandedId);
+
+  return getVisibleNodes().find((node) => node.expands && isNodeInStory(node.id, story)) ?? null;
+}
+
+function isNodeInStory(nodeId, story) {
+  const node = getNodeById(nodeId);
+  if (!node || !story) return false;
+  return story.nodeIds.includes(node.isChild ? node.parentId : node.id);
+}
+
+function getExpandedParents() {
+  return getVisibleNodes().filter((node) => node.expands && state.expandedNodeIds.has(node.id));
+}
+
+function getColumnPlan(visibleNodes, expandedParents) {
+  const expansionByColumn = new Map();
+  expandedParents.forEach((parent) => {
+    const span = getSubflow(parent.expands)?.span ?? 5;
+    expansionByColumn.set(parent.column, Math.max(expansionByColumn.get(parent.column) ?? 0, span - 1));
   });
+
+  const offsetBefore = (column) => [...expansionByColumn.entries()]
+    .filter(([expandedColumn]) => expandedColumn < column)
+    .reduce((total, [, extra]) => total + extra, 0);
+
+  const displayColumn = (node) => node.column + offsetBefore(node.column);
+  const maxColumn = Math.max(
+    ...visibleNodes.map((node) => {
+      const span = expandedParents.some((parent) => parent.id === node.id)
+        ? getSubflow(node.expands)?.span ?? 5
+        : 1;
+      return displayColumn(node) + span - 1;
+    }),
+    1,
+  );
+
+  return { displayColumn, maxColumn };
 }
 
 function renderStories() {
@@ -368,12 +527,19 @@ function renderStories() {
     button.addEventListener("click", () => {
       state.storyId = button.dataset.storyId;
       const selectedStory = stories.find((story) => story.id === state.storyId);
-      const visibleIds = new Set(getVisibleNodes().map((node) => node.id));
-      if (!selectedStory.nodeIds.includes(state.selectedNodeId)) {
-        state.selectedNodeId = selectedStory.nodeIds.find((id) => visibleIds.has(id)) ?? null;
-        renderDetail(nodes.find((node) => node.id === state.selectedNodeId));
+      const focusedSubflow = getSubflow(state.focusSubflowId);
+      if (focusedSubflow && !selectedStory.nodeIds.includes(focusedSubflow.parentId)) {
+        state.depth = "overview";
+        state.focusSubflowId = null;
+        state.expandedNodeIds.clear();
+        renderFlow();
       }
-      document.querySelectorAll(".flow-node").forEach((nodeButton) => {
+      const visibleIds = new Set(getVisibleNodes().map((node) => node.id));
+      if (!isNodeInStory(state.selectedNodeId, selectedStory)) {
+        state.selectedNodeId = selectedStory.nodeIds.find((id) => visibleIds.has(id)) ?? null;
+        renderDetail(getNodeById(state.selectedNodeId));
+      }
+      document.querySelectorAll(".flow-node, .subflow-node").forEach((nodeButton) => {
         nodeButton.classList.toggle("is-selected", nodeButton.dataset.nodeId === state.selectedNodeId);
       });
       renderStories();
@@ -384,12 +550,23 @@ function renderStories() {
 }
 
 function renderFlow() {
+  const focusSubflow = getSubflow(state.focusSubflowId);
+  if (state.depth === "focus" && focusSubflow) {
+    renderFocusedFlow(focusSubflow);
+    return;
+  }
+
+  state.focusSubflowId = null;
+  document.body.classList.remove("is-focus-mode");
   const visibleNodes = getVisibleNodes();
+  const expandedParents = getExpandedParents();
+  const columnPlan = getColumnPlan(visibleNodes, expandedParents);
+  flowCanvas.style.setProperty("--column-count", String(columnPlan.maxColumn));
   laneContainer.innerHTML = lanes
     .map((lane, laneIndex) => {
       const laneNodes = visibleNodes
         .filter((node) => node.lane === lane.id)
-        .map((node) => renderNodeSlot(node))
+        .map((node) => renderNodeSlot(node, columnPlan, expandedParents))
         .join("");
 
       const [laneColor, laneSoft] = lanePalette[laneIndex % lanePalette.length];
@@ -405,38 +582,232 @@ function renderFlow() {
     })
     .join("");
 
-  document.querySelectorAll(".flow-node").forEach((button) => {
-    button.addEventListener("click", () => selectNode(button.dataset.nodeId));
-  });
-
+  bindFlowInteractions();
+  syncDepthControls();
   updateScope();
   updateFlowSummary();
   requestAnimationFrame(() => requestAnimationFrame(drawEdges));
 }
 
-function renderNodeSlot(node) {
-  const title = node.title[state.level];
-  const branchCount = edges.filter((edge) => edge.from === node.id).length;
-  return `
-    <div class="node-slot" style="grid-column: ${node.column + 1}" data-slot-id="${escapeHtml(node.id)}">
-      <button
-        type="button"
-        class="flow-node ${node.id === state.selectedNodeId ? "is-selected" : ""}"
-        data-node-id="${escapeHtml(node.id)}"
-        data-type="${escapeHtml(node.type)}"
-        data-path="${escapeHtml(node.path)}"
-        aria-label="${escapeHtml(typeLabels[node.type])}: ${escapeHtml(title)}"
-      >
-        <span class="node-topline">
-          <span class="node-type">${escapeHtml(typeLabels[node.type])}</span>
-          <span class="node-step">${String(node.column).padStart(2, "0")}</span>
-        </span>
-        <strong>${escapeHtml(title)}</strong>
-        <span class="node-detail">${escapeHtml(node.tech)}</span>
-        ${node.type === "decision" ? `<span class="decision-branch">${branchCount} PATHS</span>` : ""}
-      </button>
+function renderFocusedFlow(subflow) {
+  const parent = getNodeById(subflow.parentId);
+  const maxColumn = Math.max(...getVisibleNodes(subflow.nodes).map((node) => node.column), 1);
+  flowCanvas.style.setProperty("--column-count", String(Math.max(maxColumn, 6)));
+  document.body.classList.add("is-focus-mode");
+  storyBracket.style.opacity = "0";
+  laneContainer.innerHTML = `
+    <div class="focus-stage">
+      <div class="focus-stage-heading">
+        <div>
+          <p class="focus-kicker">LEVEL 02 / CUTAWAY</p>
+          <h3>${escapeHtml(parent?.title[state.level] ?? subflow.title)}</h3>
+          <p>${escapeHtml(subflow.summary)}</p>
+        </div>
+        <span class="focus-count">${getVisibleNodes(subflow.nodes).length} STEPS</span>
+      </div>
+      ${renderSubflowBoard(subflow, true)}
     </div>
   `;
+  bindFlowInteractions();
+  syncDepthControls();
+  updateScope();
+  updateFlowSummary();
+  requestAnimationFrame(() => requestAnimationFrame(drawEdges));
+}
+
+function renderNodeSlot(node, columnPlan, expandedParents) {
+  const title = node.title[state.level];
+  const branchCount = edges.filter((edge) => edge.from === node.id).length;
+  const subflow = getSubflow(node.expands);
+  const expanded = expandedParents.some((parent) => parent.id === node.id);
+  const displayColumn = columnPlan.displayColumn(node);
+  const span = expanded ? subflow?.span ?? 5 : 1;
+  const commonClasses = `${node.id === state.selectedNodeId ? "is-selected" : ""} ${subflow ? "has-subflow" : ""} ${expanded ? "is-expanded" : ""}`;
+
+  if (expanded && subflow) {
+    return `
+      <div class="node-slot compound-slot" style="grid-column: ${displayColumn + 1} / span ${span}" data-slot-id="${escapeHtml(node.id)}">
+        <article
+          class="flow-node compound-node ${commonClasses}"
+          data-node-id="${escapeHtml(node.id)}"
+          data-top-node-id="${escapeHtml(node.id)}"
+          data-type="${escapeHtml(node.type)}"
+          data-path="${escapeHtml(node.path)}"
+        >
+          <header class="compound-header">
+            <button class="node-main compound-summary" type="button" data-select-node="${escapeHtml(node.id)}">
+              ${renderNodeCardContent(node, title, branchCount)}
+            </button>
+            <div class="compound-actions">
+              <button class="compound-action" type="button" data-focus-node="${escapeHtml(node.id)}">フォーカス</button>
+              <button class="compound-action" type="button" data-toggle-node="${escapeHtml(node.id)}">− 閉じる</button>
+            </div>
+          </header>
+          <div class="compound-rule">
+            <span>CUTAWAY / ${escapeHtml(subflow.id.toUpperCase())}</span>
+            <p>${escapeHtml(subflow.summary)}</p>
+          </div>
+          ${renderSubflowBoard(subflow, false)}
+        </article>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="node-slot" style="grid-column: ${displayColumn + 1}" data-slot-id="${escapeHtml(node.id)}">
+      <article
+        class="flow-node ${commonClasses}"
+        data-node-id="${escapeHtml(node.id)}"
+        data-top-node-id="${escapeHtml(node.id)}"
+        data-type="${escapeHtml(node.type)}"
+        data-path="${escapeHtml(node.path)}"
+      >
+        <button
+          type="button"
+          class="node-main"
+          data-select-node="${escapeHtml(node.id)}"
+          aria-label="${escapeHtml(typeLabels[node.type])}: ${escapeHtml(title)}"
+        >
+          ${renderNodeCardContent(node, title, branchCount)}
+        </button>
+        ${subflow ? `
+          <button class="compound-teaser" type="button" data-toggle-node="${escapeHtml(node.id)}" aria-label="${escapeHtml(title)}の詳細フローを展開">
+            <span aria-hidden="true">↳</span>
+            <b>${subflow.nodes.length} STEPS</b>
+            <span>詳細を展開 ＋</span>
+          </button>
+        ` : ""}
+      </article>
+    </div>
+  `;
+}
+
+function renderNodeCardContent(node, title, branchCount) {
+  return `
+    <span class="node-topline">
+      <span class="node-type">${escapeHtml(typeLabels[node.type])}</span>
+      <span class="node-step">${String(node.column).padStart(2, "0")}</span>
+    </span>
+    <strong>${escapeHtml(title)}</strong>
+    <span class="node-detail">${escapeHtml(node.tech)}</span>
+    ${node.type === "decision" ? `<span class="decision-branch">${branchCount} PATHS</span>` : ""}
+  `;
+}
+
+function renderSubflowBoard(subflow, focusMode) {
+  const visibleNodes = getVisibleNodes(subflow.nodes);
+  const maxColumn = Math.max(...visibleNodes.map((node) => node.column), 1);
+  const visibleNodeIds = new Set(visibleNodes.map((node) => node.id));
+  const visibleEdgeCount = subflow.edges.filter((edge) => visibleNodeIds.has(edge.from) && visibleNodeIds.has(edge.to) && isVisibleByPath(edge)).length;
+  const trackRows = subflow.tracks
+    .map((track, index) => `
+      <div class="subflow-track" style="grid-column: 1 / -1; grid-row: ${index + 1}">
+        <span class="subflow-track-code">${escapeHtml(track.code)}</span>
+        <strong>${escapeHtml(track.label)}</strong>
+      </div>
+    `)
+    .join("");
+  const childNodes = visibleNodes
+    .map((node) => {
+      const trackIndex = subflow.tracks.findIndex((track) => track.id === node.track);
+      const branchCount = subflow.edges.filter((edge) => edge.from === node.id).length;
+      return `
+        <div class="subflow-node-slot" style="grid-column: ${node.column + 1}; grid-row: ${trackIndex + 1}">
+          <button
+            class="subflow-node ${node.id === state.selectedNodeId ? "is-selected" : ""}"
+            type="button"
+            data-select-node="${escapeHtml(node.id)}"
+            data-node-id="${escapeHtml(node.id)}"
+            data-child-node-id="${escapeHtml(node.id)}"
+            data-type="${escapeHtml(node.type)}"
+            data-path="${escapeHtml(node.path)}"
+          >
+            ${renderNodeCardContent(node, node.title[state.level], branchCount)}
+          </button>
+        </div>
+      `;
+    })
+    .join("");
+
+  return `
+    <section class="subflow-board ${focusMode ? "is-focus-board" : ""}" data-subflow-id="${escapeHtml(subflow.id)}">
+      <div class="subflow-board-meta">
+        <span>${visibleNodes.length} nodes</span>
+        <span>${visibleEdgeCount} relations</span>
+        <span>${subflow.tracks.length} tracks</span>
+      </div>
+      <div class="subflow-grid" style="--sub-columns: ${maxColumn}; --sub-tracks: ${subflow.tracks.length}">
+        <svg class="subflow-edge-layer" data-subflow-edge-layer="${escapeHtml(subflow.id)}" aria-hidden="true">
+          <defs>
+            <marker id="sub-arrow-${escapeHtml(subflow.id)}" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L7,3.5 L0,7 Z" fill="context-stroke"></path>
+            </marker>
+          </defs>
+        </svg>
+        ${trackRows}
+        ${childNodes}
+      </div>
+    </section>
+  `;
+}
+
+function bindFlowInteractions() {
+  laneContainer.querySelectorAll("[data-select-node]").forEach((button) => {
+    button.addEventListener("click", () => selectNode(button.dataset.selectNode));
+  });
+  laneContainer.querySelectorAll("[data-toggle-node]").forEach((button) => {
+    button.addEventListener("click", () => toggleExpandedNode(button.dataset.toggleNode));
+  });
+  laneContainer.querySelectorAll("[data-focus-node]").forEach((button) => {
+    button.addEventListener("click", () => focusNodeSubflow(button.dataset.focusNode));
+  });
+}
+
+function toggleExpandedNode(nodeId) {
+  const node = getNodeById(nodeId);
+  if (!node?.expands) return;
+  if (state.expandedNodeIds.has(nodeId)) {
+    state.expandedNodeIds.delete(nodeId);
+    const selected = getNodeById(state.selectedNodeId);
+    if (selected?.parentId === nodeId) {
+      state.selectedNodeId = nodeId;
+      renderDetail(node);
+    }
+  } else {
+    state.expandedNodeIds.add(nodeId);
+    state.depth = "expanded";
+  }
+  if (state.expandedNodeIds.size === 0) state.depth = "overview";
+  state.focusSubflowId = null;
+  renderFlow();
+}
+
+function focusNodeSubflow(nodeId) {
+  const parent = getParentNode(getNodeById(nodeId));
+  if (!parent?.expands) return;
+  state.expandedNodeIds.add(parent.id);
+  state.depth = "focus";
+  state.focusSubflowId = parent.expands;
+  flowScroll.scrollLeft = 0;
+  renderFlow();
+}
+
+function syncDepthControls() {
+  const story = stories.find((item) => item.id === state.storyId);
+  const hasSubflows = getVisibleNodes().some((node) => node.expands && isNodeInStory(node.id, story));
+  document.querySelectorAll("#depth-control button").forEach((button) => {
+    const active = button.dataset.depth === state.depth;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-pressed", String(active));
+    button.disabled = !hasSubflows && button.dataset.depth !== "overview";
+  });
+
+  const focused = getSubflow(state.focusSubflowId);
+  focusBreadcrumb.hidden = !focused;
+  if (focused) {
+    const parent = getNodeById(focused.parentId);
+    document.querySelector("#focus-title").textContent = parent?.title[state.level] ?? focused.title;
+  }
 }
 
 function updateScope() {
@@ -445,22 +816,27 @@ function updateScope() {
   const visibleNodes = getVisibleNodes();
   const visibleScopeIds = story.nodeIds.filter((id) => visibleNodes.some((node) => node.id === id));
 
-  document.querySelectorAll(".flow-node").forEach((button) => {
-    const inScope = story.nodeIds.includes(button.dataset.nodeId);
+  document.querySelectorAll(".flow-node, .subflow-node").forEach((button) => {
+    const inScope = isNodeInStory(button.dataset.nodeId, story);
     button.classList.toggle("is-in-scope", inScope);
     button.classList.toggle("is-muted", !inScope);
   });
 
   const percentage = Math.round((visibleScopeIds.length / story.nodeIds.length) * 100);
+  const visibleChildCount = [...document.querySelectorAll(".subflow-node.is-in-scope")].length;
   document.querySelector("#coverage-value").textContent = `${percentage}%`;
   document.querySelector("#coverage-bar").style.width = `${percentage}%`;
-  document.querySelector("#coverage-caption").textContent = `${visibleScopeIds.length} / ${story.nodeIds.length} ノードを表示中`;
+  document.querySelector("#coverage-caption").textContent = `${visibleScopeIds.length} / ${story.nodeIds.length} ノードを表示中${visibleChildCount ? ` ＋ 詳細 ${visibleChildCount}` : ""}`;
   updateBracket(story, visibleScopeIds);
 }
 
 function updateBracket(story, visibleScopeIds) {
+  if (state.depth === "focus") {
+    storyBracket.style.opacity = "0";
+    return;
+  }
   const elements = visibleScopeIds
-    .map((id) => document.querySelector(`[data-node-id="${CSS.escape(id)}"]`))
+    .map((id) => document.querySelector(`[data-top-node-id="${CSS.escape(id)}"]`))
     .filter(Boolean);
 
   if (!elements.length) {
@@ -480,10 +856,10 @@ function updateBracket(story, visibleScopeIds) {
 
 function selectNode(nodeId) {
   state.selectedNodeId = nodeId;
-  document.querySelectorAll(".flow-node").forEach((button) => {
+  document.querySelectorAll(".flow-node, .subflow-node").forEach((button) => {
     button.classList.toggle("is-selected", button.dataset.nodeId === nodeId);
   });
-  renderDetail(nodes.find((node) => node.id === nodeId));
+  renderDetail(getNodeById(nodeId));
   detailPanel.classList.add("is-open");
   requestAnimationFrame(drawEdges);
 }
@@ -502,8 +878,15 @@ function renderDetail(node) {
     return;
   }
 
+  const parent = node.isChild ? getNodeById(node.parentId) : null;
+  const subflow = getSubflow(node.isChild ? node.subflowId : node.expands);
+  const lineage = parent && subflow
+    ? `<div class="detail-lineage"><span>全体</span><b>${escapeHtml(parent.title[state.level])}</b><i>/</i><span>詳細</span><b>${escapeHtml(subflow.title)}</b></div>`
+    : "";
+
   detailContent.innerHTML = `
     <div class="detail-header">
+      ${lineage}
       <div class="detail-type"><span></span>${escapeHtml(typeLabels[node.type])}</div>
       <h2 id="detail-title">${escapeHtml(node.title[state.level])}</h2>
       <p class="detail-description">${escapeHtml(node.description)}</p>
@@ -533,7 +916,26 @@ function renderDetail(node) {
       <h3>Technical mapping</h3>
       <div class="tag-list"><span class="tag">${escapeHtml(node.tech)}</span></div>
     </section>
+
+    ${subflow && !node.isChild ? `
+      <section class="detail-section detail-subflow">
+        <h3>Nested flow</h3>
+        <div class="detail-subflow-card">
+          <span>CUTAWAY / ${escapeHtml(subflow.id.toUpperCase())}</span>
+          <strong>${escapeHtml(subflow.title)}</strong>
+          <p>${escapeHtml(subflow.summary)}</p>
+          <div><b>${subflow.nodes.length}</b> steps · <b>${subflow.edges.length}</b> relations</div>
+        </div>
+        <div class="detail-subflow-actions">
+          <button type="button" id="detail-expand-button">${state.expandedNodeIds.has(node.id) ? "詳細を閉じる" : "タイムライン内で展開"}</button>
+          <button type="button" id="detail-focus-button">詳細だけを見る</button>
+        </div>
+      </section>
+    ` : ""}
   `;
+
+  document.querySelector("#detail-expand-button")?.addEventListener("click", () => toggleExpandedNode(node.id));
+  document.querySelector("#detail-focus-button")?.addEventListener("click", () => focusNodeSubflow(node.id));
 }
 
 function drawEdges() {
@@ -541,22 +943,29 @@ function drawEdges() {
   edgeLayer.setAttribute("viewBox", `0 0 ${svgRect.width} ${svgRect.height}`);
   edgeLayer.querySelectorAll(".edge-path, .edge-foreign").forEach((element) => element.remove());
 
+  if (state.depth === "focus") {
+    document.querySelectorAll(".subflow-board").forEach((board) => drawSubflowEdges(board));
+    return;
+  }
+
   const story = stories.find((item) => item.id === state.storyId);
   if (!story) return;
   const visibleIds = new Set(getVisibleNodes().map((node) => node.id));
+  const selectedNode = getNodeById(state.selectedNodeId);
+  const selectedAnchorId = selectedNode?.isChild ? selectedNode.parentId : selectedNode?.id;
 
   edges.forEach((edge) => {
     if (!visibleIds.has(edge.from) || !visibleIds.has(edge.to)) return;
     if (state.path !== "all" && edge.path !== "both" && edge.path !== state.path) return;
 
-    const from = document.querySelector(`[data-node-id="${CSS.escape(edge.from)}"]`);
-    const to = document.querySelector(`[data-node-id="${CSS.escape(edge.to)}"]`);
+    const from = document.querySelector(`[data-top-node-id="${CSS.escape(edge.from)}"]`);
+    const to = document.querySelector(`[data-top-node-id="${CSS.escape(edge.to)}"]`);
     if (!from || !to) return;
 
     const fromRect = from.getBoundingClientRect();
     const toRect = to.getBoundingClientRect();
     const inScope = story.nodeIds.includes(edge.from) && story.nodeIds.includes(edge.to);
-    const selected = edge.from === state.selectedNodeId || edge.to === state.selectedNodeId;
+    const selected = edge.from === selectedAnchorId || edge.to === selectedAnchorId;
     const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
 
     let x1 = fromRect.right - svgRect.left;
@@ -598,14 +1007,90 @@ function drawEdges() {
       edgeLayer.appendChild(foreign);
     }
   });
+
+  document.querySelectorAll(".subflow-board").forEach((board) => drawSubflowEdges(board));
+}
+
+function drawSubflowEdges(board) {
+  const subflow = getSubflow(board.dataset.subflowId);
+  const layer = board.querySelector("[data-subflow-edge-layer]");
+  if (!subflow || !layer) return;
+
+  const layerRect = layer.getBoundingClientRect();
+  layer.setAttribute("viewBox", `0 0 ${layerRect.width} ${layerRect.height}`);
+  layer.querySelectorAll(".subflow-edge-path, .subflow-edge-foreign").forEach((element) => element.remove());
+  const visibleIds = new Set(getVisibleNodes(subflow.nodes).map((node) => node.id));
+  const story = stories.find((item) => item.id === state.storyId);
+  const inScope = story?.nodeIds.includes(subflow.parentId);
+
+  subflow.edges.forEach((edge) => {
+    if (!visibleIds.has(edge.from) || !visibleIds.has(edge.to) || !isVisibleByPath(edge)) return;
+    const from = board.querySelector(`[data-child-node-id="${CSS.escape(edge.from)}"]`);
+    const to = board.querySelector(`[data-child-node-id="${CSS.escape(edge.to)}"]`);
+    if (!from || !to) return;
+
+    const fromRect = from.getBoundingClientRect();
+    const toRect = to.getBoundingClientRect();
+    let x1 = fromRect.right - layerRect.left;
+    let y1 = fromRect.top + fromRect.height / 2 - layerRect.top;
+    let x2 = toRect.left - layerRect.left;
+    let y2 = toRect.top + toRect.height / 2 - layerRect.top;
+    let d;
+
+    if (edge.loop || x2 <= x1) {
+      x1 = fromRect.left + fromRect.width / 2 - layerRect.left;
+      y1 = fromRect.bottom - layerRect.top;
+      x2 = toRect.left + toRect.width / 2 - layerRect.left;
+      y2 = toRect.top - layerRect.top;
+      const loopY = Math.max(fromRect.bottom, toRect.bottom) - layerRect.top + 20;
+      d = `M ${x1} ${y1} C ${x1} ${loopY}, ${x2} ${loopY}, ${x2} ${y2}`;
+    } else {
+      const bend = Math.max(22, Math.abs(x2 - x1) * 0.4);
+      d = `M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`;
+    }
+
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", d);
+    path.setAttribute("class", `subflow-edge-path edge-${edge.type} ${!inScope ? "is-muted" : ""} ${edge.path === "exception" ? "is-exception" : ""}`);
+    path.setAttribute("marker-end", `url(#sub-arrow-${subflow.id})`);
+    if (edge.from === state.selectedNodeId || edge.to === state.selectedNodeId) path.style.strokeWidth = "2.5";
+    const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
+    title.textContent = `${edge.from} → ${edge.to}（${edgeTypeLabels[edge.type]}）`;
+    path.appendChild(title);
+    layer.appendChild(path);
+
+    if (edge.label) {
+      const foreign = document.createElementNS("http://www.w3.org/2000/svg", "foreignObject");
+      foreign.setAttribute("x", (x1 + x2) / 2 - 28);
+      foreign.setAttribute("y", (y1 + y2) / 2 - 12);
+      foreign.setAttribute("width", "56");
+      foreign.setAttribute("height", "24");
+      foreign.setAttribute("class", "subflow-edge-foreign");
+      foreign.innerHTML = `<div xmlns="http://www.w3.org/1999/xhtml" class="edge-label">${escapeHtml(edge.label)}</div>`;
+      layer.appendChild(foreign);
+    }
+  });
 }
 
 function updateFlowSummary() {
+  const focused = getSubflow(state.focusSubflowId);
+  if (state.depth === "focus" && focused) {
+    const visibleChildren = getVisibleNodes(focused.nodes);
+    document.querySelector("#flow-summary").innerHTML = `
+      <span><b>${visibleChildren.length}</b> 詳細ノード</span>
+      <span><b>${focused.tracks.length}</b> トラック</span>
+      <span><b>1</b> 親ノード</span>
+    `;
+    return;
+  }
+
   const visibleNodes = getVisibleNodes();
+  const visibleChildren = getExpandedParents()
+    .flatMap((parent) => getVisibleNodes(getSubflow(parent.expands)?.nodes ?? []));
   document.querySelector("#flow-summary").innerHTML = `
     <span><b>${visibleNodes.length}</b> ノード</span>
     <span><b>${lanes.length}</b> レーン</span>
-    <span><b>${visibleNodes.filter((node) => node.type === "decision").length}</b> 判断</span>
+    <span><b>${visibleChildren.length}</b> 詳細を展開</span>
   `;
 }
 
@@ -625,7 +1110,9 @@ document.querySelectorAll("#path-filter button").forEach((button) => {
       item.setAttribute("aria-pressed", String(active));
     });
     renderFlow();
-    const selectedStillVisible = getVisibleNodes().some((node) => node.id === state.selectedNodeId);
+    const selected = getNodeById(state.selectedNodeId);
+    const selectedStillVisible = selected && isVisibleByPath(selected)
+      && (!selected.isChild || isVisibleByPath(getParentNode(selected)));
     if (!selectedStillVisible) {
       state.selectedNodeId = null;
       renderDetail(null);
@@ -638,7 +1125,46 @@ document.querySelector("#zoom-level").addEventListener("change", (event) => {
   document.body.classList.remove("level-1", "level-2", "level-3");
   document.body.classList.add(`level-${state.level}`);
   renderFlow();
-  renderDetail(nodes.find((node) => node.id === state.selectedNodeId));
+  renderDetail(getNodeById(state.selectedNodeId));
+});
+
+document.querySelectorAll("#depth-control button").forEach((button) => {
+  button.addEventListener("click", () => {
+    const depth = button.dataset.depth;
+    if (depth === "overview") {
+      const selected = getNodeById(state.selectedNodeId);
+      if (selected?.isChild) {
+        state.selectedNodeId = selected.parentId;
+        renderDetail(getNodeById(selected.parentId));
+      }
+      state.depth = "overview";
+      state.focusSubflowId = null;
+      state.expandedNodeIds.clear();
+      renderFlow();
+      return;
+    }
+
+    const parent = getSelectedCompoundParent();
+    if (!parent) {
+      showToast("この仕様には展開できる詳細フローがありません");
+      return;
+    }
+    state.expandedNodeIds.add(parent.id);
+    if (depth === "focus") {
+      focusNodeSubflow(parent.id);
+    } else {
+      state.depth = "expanded";
+      state.focusSubflowId = null;
+      renderFlow();
+    }
+  });
+});
+
+document.querySelector("#focus-back-button").addEventListener("click", () => {
+  state.depth = "expanded";
+  state.focusSubflowId = null;
+  flowScroll.scrollLeft = 0;
+  renderFlow();
 });
 
 document.querySelector("#fit-button").addEventListener("click", () => {
@@ -716,10 +1242,11 @@ async function bootstrap() {
     try {
       const response = await fetch(specUrl);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const loaded = await loadSpecText(await response.text(), specUrl);
-      if (loaded) return;
+      await loadSpecText(await response.text(), specUrl);
+      return;
     } catch (error) {
       showSpecError(new Error(`指定された仕様を取得できません: ${error.message}`), specUrl);
+      return;
     }
   }
   await loadSpecText(bundledSpecYaml, "specs/login.yaml");

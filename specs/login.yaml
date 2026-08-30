@@ -1,5 +1,5 @@
 # yaml-language-server: $schema=../schema/sdd-flow.schema.json
-schemaVersion: 1
+schemaVersion: 2
 
 scenario:
   id: login
@@ -11,7 +11,7 @@ scenario:
   defaultStory: US-101
   defaultPath: happy
   defaultLevel: 2
-  selectedNode: account-decision
+  selectedNode: login-action
 
 lanes:
   - id: browser
@@ -70,6 +70,7 @@ nodes:
     column: 2
     type: action
     path: both
+    expands: credential-entry
     title:
       level1: 認証情報を入力
       level2: ログインする
@@ -350,3 +351,214 @@ edges:
     path: exception
     label: RETRY
     loop: true
+
+subflows:
+  credential-entry:
+    title: 認証情報を入力して送信する
+    summary: 入力、形式検証、ボタン活性化、送信までを親ノード「ログインする」の内側に定義します。
+    span: 6
+    tracks:
+      - id: input
+        label: ユーザー入力
+        code: IN
+      - id: rule
+        label: クライアント検証
+        code: RULE
+      - id: ui
+        label: 画面状態
+        code: UI
+    nodes:
+      - id: member-id-input
+        track: input
+        column: 1
+        type: action
+        path: both
+        title:
+          level1: IDを入力
+          level2: 会員IDを入力する
+          level3: input[name=memberId]
+        technical: onInput(memberId)
+        detail:
+          description: 会員がログインに使用するIDを入力します。
+          behavior:
+            given: ログイン画面が表示されている
+            when: 会員ID欄へ文字を入力する
+            then: 入力値を保持し、IDの形式検証を開始する
+          assumption: 前後の空白は検証前に取り除きます。
+          links: [US-101, US-102, UI-LOGIN-ID]
+
+      - id: member-id-format
+        track: rule
+        column: 2
+        type: decision
+        path: both
+        title:
+          level1: ID形式を確認
+          level2: 会員IDの形式は正しい？
+          level3: memberIdSchema.safeParse
+        technical: "rule: 8-32 chars / ASCII"
+        detail:
+          description: 会員IDの長さと利用可能な文字をクライアント側で検証します。
+          behavior:
+            given: 会員IDが入力されている
+            when: 入力値が変化する
+            then: 形式が正しい場合だけ次の入力へ進める
+          assumption: この検証は利便性のためで、サーバー側でも同じ制約を検証します。
+          links: [US-101, RULE-LOGIN-ID]
+
+      - id: password-input
+        track: input
+        column: 3
+        type: action
+        path: both
+        title:
+          level1: PWを入力
+          level2: パスワードを入力する
+          level3: input[type=password]
+        technical: onInput(password)
+        detail:
+          description: 会員がパスワードをマスクされた入力欄へ入力します。
+          behavior:
+            given: 会員IDの形式が正しい
+            when: パスワード欄へ文字を入力する
+            then: 入力値を画面表示せず、パスワードの形式検証を開始する
+          assumption: パスワードはブラウザのログや分析イベントへ送信しません。
+          links: [US-101, US-102, UI-LOGIN-PW]
+
+      - id: password-format
+        track: rule
+        column: 4
+        type: decision
+        path: both
+        title:
+          level1: PW形式を確認
+          level2: パスワードの形式は正しい？
+          level3: passwordSchema.safeParse
+        technical: "rule: 12-128 chars"
+        detail:
+          description: 必須、長さ、制御文字の有無をクライアント側で検証します。
+          behavior:
+            given: パスワードが入力されている
+            when: 入力値が変化する
+            then: 形式が正しい場合だけログイン操作を有効にする
+          assumption: 複雑性の判定は認証時ではなくパスワード登録時に行います。
+          links: [US-101, RULE-LOGIN-PW]
+
+      - id: login-form-ready
+        track: ui
+        column: 5
+        type: state
+        path: happy
+        title:
+          level1: ボタンを有効化
+          level2: ログインボタンが活性化した
+          level3: formState.isValid = true
+        technical: derived form state
+        detail:
+          description: IDとパスワードがともに形式検証を通過した画面状態です。
+          behavior:
+            given: 2つの入力項目がどちらも有効である
+            when: フォーム全体の状態を再計算する
+            then: ログインボタンを押せる状態にする
+          assumption: 送信中は二重送信防止のため再び無効化します。
+          links: [US-101, UI-LOGIN-STATE]
+
+      - id: login-button-click
+        track: input
+        column: 6
+        type: action
+        path: happy
+        title:
+          level1: ログインを実行
+          level2: ログインボタンをクリックする
+          level3: form.requestSubmit()
+        technical: onSubmit(loginForm)
+        detail:
+          description: 検証済みの入力内容でログイン要求を開始します。
+          behavior:
+            given: ログインボタンが活性化している
+            when: 会員がログインボタンを選択する
+            then: 送信中状態へ変更し、親フローのログイン要求へ接続する
+          assumption: Enterキーによる送信も同じ処理へ合流します。
+          links: [US-101, AC-101-01]
+
+      - id: member-id-error
+        track: ui
+        column: 3
+        type: view
+        path: exception
+        title:
+          level1: IDを修正
+          level2: 会員IDの形式エラーを表示する
+          level3: render memberIdError
+        technical: aria-describedby=id-error
+        detail:
+          description: 認証処理を始める前に修正できる形式エラーを表示します。
+          behavior:
+            given: 会員IDの形式が不正である
+            when: ID欄からフォーカスが外れる
+            then: 問題のある条件を示してID欄へ関連付ける
+          assumption: アカウントの存在有無には言及しません。
+          links: [US-102, UI-LOGIN-ID-ERROR]
+
+      - id: password-error
+        track: ui
+        column: 5
+        type: view
+        path: exception
+        title:
+          level1: PWを修正
+          level2: パスワードの形式エラーを表示する
+          level3: render passwordError
+        technical: aria-describedby=password-error
+        detail:
+          description: 送信前に修正できるパスワードの形式エラーを表示します。
+          behavior:
+            given: パスワードの形式が不正である
+            when: パスワード欄からフォーカスが外れる
+            then: 入力値を表示せず、満たしていない条件を示す
+          assumption: エラー表示から入力済み文字数を推測できないようにします。
+          links: [US-102, UI-LOGIN-PW-ERROR]
+    edges:
+      - from: member-id-input
+        to: member-id-format
+        type: triggers
+        path: both
+      - from: member-id-format
+        to: password-input
+        type: enables
+        path: happy
+        label: OK
+      - from: member-id-format
+        to: member-id-error
+        type: produces
+        path: exception
+        label: INVALID
+      - from: member-id-error
+        to: member-id-input
+        type: returns
+        path: exception
+        loop: true
+      - from: password-input
+        to: password-format
+        type: triggers
+        path: both
+      - from: password-format
+        to: login-form-ready
+        type: enables
+        path: happy
+        label: OK
+      - from: password-format
+        to: password-error
+        type: produces
+        path: exception
+        label: INVALID
+      - from: password-error
+        to: password-input
+        type: returns
+        path: exception
+        loop: true
+      - from: login-form-ready
+        to: login-button-click
+        type: enables
+        path: happy

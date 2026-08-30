@@ -102,6 +102,15 @@
             <option value="3">L3 技術フロー</option>
           </select>
 
+          <div class="toolbar-divider" aria-hidden="true"></div>
+
+          <span class="select-label">詳細の深さ</span>
+          <div class="segmented-control depth-control" id="depth-control" aria-label="詳細の深さ">
+            <button type="button" data-depth="overview" class="is-active" aria-pressed="true">全体</button>
+            <button type="button" data-depth="expanded" aria-pressed="false">展開</button>
+            <button type="button" data-depth="focus" aria-pressed="false">フォーカス</button>
+          </div>
+
           <button class="quiet-button" id="fit-button" type="button">
             <span aria-hidden="true">⊙</span>
             全体を表示
@@ -126,6 +135,11 @@
             <div>
               <p class="eyebrow" id="scenario-eyebrow">SCENARIO</p>
               <h2 id="flow-title">仕様を読み込み中</h2>
+              <div class="focus-breadcrumb" id="focus-breadcrumb" hidden>
+                <button type="button" id="focus-back-button" aria-label="全体フローに戻る">← 全体フロー</button>
+                <span aria-hidden="true">/</span>
+                <strong id="focus-title"></strong>
+              </div>
             </div>
             <div class="flow-summary" id="flow-summary">
               <span><b>11</b> ノード</span>

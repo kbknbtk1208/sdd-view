@@ -93,15 +93,6 @@
             <button type="button" data-path="all" aria-pressed="false">すべて</button>
           </div>
 
-          <div class="toolbar-divider" aria-hidden="true"></div>
-
-          <span class="select-label">表示する層</span>
-          <div class="segmented-control depth-control" id="depth-control" aria-label="表示する層">
-            <button type="button" data-depth="overview" class="is-active" aria-pressed="true">体験</button>
-            <button type="button" data-depth="expanded" aria-pressed="false">実現</button>
-            <button type="button" data-depth="focus" aria-pressed="false">フォーカス</button>
-          </div>
-
           <button class="quiet-button" id="fit-button" type="button">
             <span aria-hidden="true">⊙</span>
             全体を表示
@@ -126,11 +117,6 @@
             <div>
               <p class="eyebrow" id="scenario-eyebrow">EXPERIENCE</p>
               <h2 id="flow-title">仕様を読み込み中</h2>
-              <div class="focus-breadcrumb" id="focus-breadcrumb" hidden>
-                <button type="button" id="focus-back-button" aria-label="Experience Flowに戻る">← Experience</button>
-                <span aria-hidden="true">/</span>
-                <strong id="focus-title"></strong>
-              </div>
             </div>
             <div class="flow-summary" id="flow-summary">
               <span><b>0</b> ノード</span>
@@ -177,6 +163,33 @@
         </div>
         <div id="detail-content"></div>
       </aside>
+    </div>
+
+    <div class="subflow-overlay" id="subflow-overlay" hidden>
+      <section class="subflow-dialog" role="dialog" aria-modal="false" aria-labelledby="subflow-dialog-title" aria-describedby="subflow-dialog-summary" tabindex="-1">
+        <header class="subflow-dialog-header" tabindex="0" aria-label="詳細フローをドラッグして移動">
+          <div>
+            <p class="eyebrow" id="subflow-dialog-kicker">詳細フロー</p>
+            <h2 id="subflow-dialog-title"></h2>
+            <p id="subflow-dialog-summary"></p>
+          </div>
+          <div class="subflow-dialog-meta">
+            <span id="subflow-dialog-kind"></span>
+            <span id="subflow-dialog-count"></span>
+            <span class="subflow-drag-hint">↔ ドラッグして移動</span>
+          </div>
+          <button class="icon-button subflow-dialog-close" id="subflow-dialog-close" type="button" aria-label="詳細フローを閉じる">×</button>
+        </header>
+        <div class="subflow-dialog-body" id="subflow-dialog-body"></div>
+        <button
+          class="subflow-resize-handle"
+          id="subflow-resize-handle"
+          type="button"
+          aria-label="詳細フローのサイズを変更。矢印キーで24px、Shiftと矢印キーで80px調整"
+          title="右下をドラッグしてサイズ変更。矢印キーでも調整できます"
+          tabindex="0"
+        ></button>
+      </section>
     </div>
 
     <div class="popover" id="legend-popover" role="dialog" aria-modal="false" aria-labelledby="legend-title" hidden>

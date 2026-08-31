@@ -1,6 +1,6 @@
 # Trace — 振る舞い仕様ビュー
 
-ユーザーから見えるExperience Flowと、それを実現するInteraction／Orchestration Subflowを切り替えて確認する静的プロトタイプです。
+ユーザーから見えるExperience Flowを固定したまま、Interaction／Orchestration Subflowをフローティング詳細パネルで確認する静的プロトタイプです。
 
 ## 起動方法
 
@@ -23,8 +23,10 @@ npm run build
 
 - ユーザーストーリーごとの変更範囲の強調
 - 正常系・異常系・全経路の切り替え
-- Experience／Realization／フォーカスの表示切り替え
-- InteractionとOrchestrationを区別したカットアウェイ表示
+- Experience Flow上の「画面内の動き」「システムの動き」から詳細パネルを開く
+- InteractionとOrchestrationを区別したフローティング詳細表示
+- 詳細パネルをヘッダーからドラッグして移動（表示中も背景フローと右詳細を操作可能）
+- 詳細パネル右下のグリップをドラッグして幅・高さを変更（矢印キーにも対応）
 - 順不同・並列グループと複数入力のAND結合
 - エッジの依存関係から決まる自動配置
 - ノード選択によるGiven-When-Then、Assumption、関連仕様の確認

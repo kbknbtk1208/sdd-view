@@ -65,9 +65,8 @@ const state = {
   path: "happy",
   selectedNodeId: null,
   sourceName: "",
-  depth: "overview",
-  expandedNodeIds: new Set(),
-  focusSubflowId: null,
+  activeSubflowId: null,
+  activeSubflowParentId: null,
 };
 
 const laneContainer = document.querySelector("#lane-container");
@@ -81,7 +80,22 @@ const flowCanvas = document.querySelector("#flow-canvas");
 const toast = document.querySelector("#toast");
 const specFileInput = document.querySelector("#spec-file-input");
 const specError = document.querySelector("#spec-error");
-const focusBreadcrumb = document.querySelector("#focus-breadcrumb");
+const subflowOverlay = document.querySelector("#subflow-overlay");
+const subflowDialog = document.querySelector(".subflow-dialog");
+const subflowDialogHeader = document.querySelector(".subflow-dialog-header");
+const subflowDialogBody = document.querySelector("#subflow-dialog-body");
+const subflowDialogClose = document.querySelector("#subflow-dialog-close");
+const subflowResizeHandle = document.querySelector("#subflow-resize-handle");
+let lastSubflowTrigger = null;
+let subflowPanelPosition = null;
+let subflowPanelSize = null;
+let subflowDragState = null;
+let subflowResizeState = null;
+let subflowEdgeFrame = null;
+const PANEL_GUTTER = 10;
+const PANEL_GAP = 10;
+const PANEL_MIN_WIDTH = 440;
+const PANEL_MIN_HEIGHT = 260;
 
 class SpecValidationError extends Error {
   constructor(errors) {
@@ -133,11 +147,6 @@ function assignAutoColumns(nodeList, edgeList) {
   nodeList.forEach((node, index) => {
     node.column = processed.has(node.id) ? rank.get(node.id) : index + 1;
   });
-}
-
-function getSubflowSpan(subflow) {
-  const maxColumn = Math.max(...subflow.nodes.map((node) => node.column), 1);
-  return Math.min(Math.max(maxColumn, 4), 8);
 }
 
 function validateSpec(raw) {
@@ -437,14 +446,15 @@ function applySpec(spec, sourceName) {
   state.path = scenario.defaultPath;
   state.selectedNodeId = scenario.selectedNode;
   state.sourceName = sourceName;
-  state.depth = "overview";
-  state.expandedNodeIds = new Set();
-  state.focusSubflowId = null;
+  state.activeSubflowId = null;
+  state.activeSubflowParentId = null;
+  lastSubflowTrigger = null;
 
   const maxColumn = Math.max(...nodes.map((node) => node.column), 1);
   flowCanvas.style.setProperty("--column-count", String(maxColumn));
   flowScroll.scrollLeft = 0;
   detailPanel.classList.remove("is-open");
+  closeSubflowPanel({ restoreFocus: false });
 
   document.title = `${scenario.title} — Trace`;
   document.querySelector("#scenario-project").textContent = scenario.project;
@@ -463,8 +473,6 @@ function applySpec(spec, sourceName) {
     button.classList.toggle("is-active", active);
     button.setAttribute("aria-pressed", String(active));
   });
-  document.body.classList.remove("is-focus-mode");
-
   renderStories();
   renderFlow();
   renderDetail(getNodeById(state.selectedNodeId));
@@ -529,52 +537,10 @@ function getParentNode(node) {
     : node;
 }
 
-function getSelectedCompoundParent() {
-  const story = stories.find((item) => item.id === state.storyId);
-  const selected = getNodeById(state.selectedNodeId);
-  const selectedParent = getParentNode(selected);
-  if (selectedParent?.expands && isNodeInStory(selectedParent.id, story)) return selectedParent;
-
-  const expandedId = [...state.expandedNodeIds].find((nodeId) => nodes.some((node) => node.id === nodeId && isVisibleByPath(node) && isNodeInStory(node.id, story)));
-  if (expandedId) return getNodeById(expandedId);
-
-  return getVisibleNodes().find((node) => node.expands && isNodeInStory(node.id, story)) ?? null;
-}
-
 function isNodeInStory(nodeId, story) {
   const node = getNodeById(nodeId);
   if (!node || !story) return false;
   return story.nodeIds.includes(node.isChild ? node.parentId : node.id);
-}
-
-function getExpandedParents() {
-  return getVisibleNodes().filter((node) => node.expands && state.expandedNodeIds.has(node.id));
-}
-
-function getColumnPlan(visibleNodes, expandedParents) {
-  const expansionByColumn = new Map();
-  expandedParents.forEach((parent) => {
-    const subflow = getSubflow(parent.expands);
-    const span = subflow ? getSubflowSpan(subflow) : 4;
-    expansionByColumn.set(parent.column, Math.max(expansionByColumn.get(parent.column) ?? 0, span - 1));
-  });
-
-  const offsetBefore = (column) => [...expansionByColumn.entries()]
-    .filter(([expandedColumn]) => expandedColumn < column)
-    .reduce((total, [, extra]) => total + extra, 0);
-
-  const displayColumn = (node) => node.column + offsetBefore(node.column);
-  const maxColumn = Math.max(
-    ...visibleNodes.map((node) => {
-      const span = expandedParents.some((parent) => parent.id === node.id)
-        ? getSubflowSpan(getSubflow(node.expands))
-        : 1;
-      return displayColumn(node) + span - 1;
-    }),
-    1,
-  );
-
-  return { displayColumn, maxColumn };
 }
 
 function renderStories() {
@@ -592,13 +558,8 @@ function renderStories() {
     button.addEventListener("click", () => {
       state.storyId = button.dataset.storyId;
       const selectedStory = stories.find((story) => story.id === state.storyId);
-      const focusedSubflow = getSubflow(state.focusSubflowId);
-      if (focusedSubflow && !selectedStory.nodeIds.includes(focusedSubflow.parentId)) {
-        state.depth = "overview";
-        state.focusSubflowId = null;
-        state.expandedNodeIds.clear();
-        renderFlow();
-      }
+      const activeSubflow = getSubflow(state.activeSubflowId);
+      if (activeSubflow && !selectedStory.nodeIds.includes(activeSubflow.parentId)) closeSubflowPanel();
       const visibleIds = new Set(getVisibleNodes().map((node) => node.id));
       if (!isNodeInStory(state.selectedNodeId, selectedStory)) {
         state.selectedNodeId = selectedStory.nodeIds.find((id) => visibleIds.has(id)) ?? null;
@@ -609,30 +570,22 @@ function renderStories() {
       });
       renderStories();
       updateScope();
+      renderActiveSubflow();
       requestAnimationFrame(drawEdges);
     });
   });
 }
 
 function renderFlow() {
-  const focusSubflow = getSubflow(state.focusSubflowId);
-  if (state.depth === "focus" && focusSubflow) {
-    renderFocusedFlow(focusSubflow);
-    return;
-  }
-
-  state.focusSubflowId = null;
-  document.body.classList.remove("is-focus-mode");
   const visibleNodes = getVisibleNodes();
-  const expandedParents = getExpandedParents();
-  const columnPlan = getColumnPlan(visibleNodes, expandedParents);
-  flowCanvas.style.setProperty("--column-count", String(columnPlan.maxColumn));
+  const maxColumn = Math.max(...visibleNodes.map((node) => node.column), 1);
+  flowCanvas.style.setProperty("--column-count", String(maxColumn));
   const activeLanes = lanes.filter((lane) => visibleNodes.some((node) => node.lane === lane.id));
   laneContainer.innerHTML = activeLanes
     .map((lane, laneIndex) => {
       const laneNodes = visibleNodes
         .filter((node) => node.lane === lane.id)
-        .map((node) => renderNodeSlot(node, columnPlan, expandedParents))
+        .map((node) => renderNodeSlot(node))
         .join("");
 
       const [laneColor, laneSoft] = lane.id === "exception"
@@ -651,78 +604,19 @@ function renderFlow() {
     .join("");
 
   bindFlowInteractions();
-  syncDepthControls();
   updateScope();
   updateFlowSummary();
+  renderActiveSubflow();
   requestAnimationFrame(() => requestAnimationFrame(drawEdges));
 }
 
-function renderFocusedFlow(subflow) {
-  const parent = getNodeById(subflow.parentId);
-  const maxColumn = Math.max(...getVisibleNodes(subflow.nodes).map((node) => node.column), 1);
-  flowCanvas.style.setProperty("--column-count", String(Math.max(maxColumn, 6)));
-  document.body.classList.add("is-focus-mode");
-  storyBracket.style.opacity = "0";
-  laneContainer.innerHTML = `
-    <div class="focus-stage">
-      <div class="focus-stage-heading">
-        <div>
-          <p class="focus-kicker">REALIZATION / ${escapeHtml(subflowKindLabels[subflow.kind])}</p>
-          <h3>${escapeHtml(parent?.title ?? subflow.title)}</h3>
-          <p>${escapeHtml(subflow.summary)}</p>
-        </div>
-        <span class="focus-count">${getVisibleNodes(subflow.nodes).length} STEPS</span>
-      </div>
-      ${renderSubflowBoard(subflow, true)}
-    </div>
-  `;
-  bindFlowInteractions();
-  syncDepthControls();
-  updateScope();
-  updateFlowSummary();
-  requestAnimationFrame(() => requestAnimationFrame(drawEdges));
-}
-
-function renderNodeSlot(node, columnPlan, expandedParents) {
+function renderNodeSlot(node) {
   const title = node.title;
   const branchCount = edges.filter((edge) => edge.from === node.id).length;
   const subflow = getSubflow(node.expands);
-  const expanded = expandedParents.some((parent) => parent.id === node.id);
-  const displayColumn = columnPlan.displayColumn(node);
-  const span = expanded && subflow ? getSubflowSpan(subflow) : 1;
-  const commonClasses = `${node.id === state.selectedNodeId ? "is-selected" : ""} ${subflow ? "has-subflow" : ""} ${expanded ? "is-expanded" : ""}`;
-
-  if (expanded && subflow) {
-    return `
-      <div class="node-slot compound-slot" style="grid-column: ${displayColumn + 1} / span ${span}" data-slot-id="${escapeHtml(node.id)}">
-        <article
-          class="flow-node compound-node kind-${escapeHtml(subflow.kind)} ${commonClasses}"
-          data-node-id="${escapeHtml(node.id)}"
-          data-top-node-id="${escapeHtml(node.id)}"
-          data-type="${escapeHtml(node.type)}"
-          data-path="${escapeHtml(node.path)}"
-        >
-          <header class="compound-header">
-            <button class="node-main compound-summary" type="button" data-select-node="${escapeHtml(node.id)}">
-              ${renderNodeCardContent(node, title, branchCount)}
-            </button>
-            <div class="compound-actions">
-              <button class="compound-action" type="button" data-focus-node="${escapeHtml(node.id)}">フォーカス</button>
-              <button class="compound-action" type="button" data-toggle-node="${escapeHtml(node.id)}">− 閉じる</button>
-            </div>
-          </header>
-          <div class="compound-rule">
-            <span>REALIZATION / ${escapeHtml(subflowKindLabels[subflow.kind])}</span>
-            <p>${escapeHtml(subflow.summary)}</p>
-          </div>
-          ${renderSubflowBoard(subflow, false)}
-        </article>
-      </div>
-    `;
-  }
-
+  const commonClasses = `${node.id === state.selectedNodeId ? "is-selected" : ""} ${subflow ? "has-subflow" : ""}`;
   return `
-    <div class="node-slot" style="grid-column: ${displayColumn + 1}" data-slot-id="${escapeHtml(node.id)}">
+    <div class="node-slot" style="grid-column: ${node.column + 1}" data-slot-id="${escapeHtml(node.id)}">
       <article
         class="flow-node ${commonClasses}"
         data-node-id="${escapeHtml(node.id)}"
@@ -739,10 +633,10 @@ function renderNodeSlot(node, columnPlan, expandedParents) {
           ${renderNodeCardContent(node, title, branchCount)}
         </button>
         ${subflow ? `
-          <button class="compound-teaser" type="button" data-toggle-node="${escapeHtml(node.id)}" aria-label="${escapeHtml(title)}の実現フローを展開">
+          <button class="compound-teaser" type="button" data-toggle-node="${escapeHtml(node.id)}" aria-label="${escapeHtml(title)}の詳細を見る">
             <span aria-hidden="true">↳</span>
-            <b>${escapeHtml(subflowKindLabels[subflow.kind])}</b>
-            <span>${subflow.nodes.length} steps ＋</span>
+            <b>${subflow.kind === "interaction" ? "画面内の動き" : "システムの動き"}</b>
+            <span>詳細を見る</span>
           </button>
         ` : ""}
       </article>
@@ -762,7 +656,7 @@ function renderNodeCardContent(node, title, branchCount) {
   `;
 }
 
-function renderSubflowBoard(subflow, focusMode) {
+function renderSubflowBoard(subflow) {
   const visibleNodes = getVisibleNodes(subflow.nodes);
   const maxColumn = Math.max(...visibleNodes.map((node) => node.column), 1);
   const visibleNodeIds = new Set(visibleNodes.map((node) => node.id));
@@ -803,7 +697,7 @@ function renderSubflowBoard(subflow, focusMode) {
     .join("");
 
   return `
-    <section class="subflow-board kind-${escapeHtml(subflow.kind)} ${focusMode ? "is-focus-board" : ""}" data-subflow-id="${escapeHtml(subflow.id)}">
+    <section class="subflow-board kind-${escapeHtml(subflow.kind)}" data-subflow-id="${escapeHtml(subflow.id)}">
       <div class="subflow-board-meta">
         <span class="subflow-kind">${escapeHtml(subflowKindLabels[subflow.kind])}</span>
         <span>${visibleNodes.length} nodes</span>
@@ -827,62 +721,191 @@ function renderSubflowBoard(subflow, focusMode) {
 }
 
 function bindFlowInteractions() {
-  laneContainer.querySelectorAll("[data-select-node]").forEach((button) => {
+  bindNodeInteractions(laneContainer);
+}
+
+function bindNodeInteractions(root) {
+  root.querySelectorAll("[data-select-node]").forEach((button) => {
     button.addEventListener("click", () => selectNode(button.dataset.selectNode));
   });
-  laneContainer.querySelectorAll("[data-toggle-node]").forEach((button) => {
-    button.addEventListener("click", () => toggleExpandedNode(button.dataset.toggleNode));
-  });
-  laneContainer.querySelectorAll("[data-focus-node]").forEach((button) => {
-    button.addEventListener("click", () => focusNodeSubflow(button.dataset.focusNode));
+  root.querySelectorAll("[data-toggle-node]").forEach((button) => {
+    button.addEventListener("click", () => openSubflowPanel(button.dataset.toggleNode, button));
   });
 }
 
-function toggleExpandedNode(nodeId) {
+function openSubflowPanel(nodeId, trigger = null) {
   const node = getNodeById(nodeId);
   if (!node?.expands) return;
-  if (state.expandedNodeIds.has(nodeId)) {
-    state.expandedNodeIds.delete(nodeId);
-    const selected = getNodeById(state.selectedNodeId);
-    if (selected?.parentId === nodeId) {
-      state.selectedNodeId = nodeId;
-      renderDetail(node);
-    }
-  } else {
-    state.expandedNodeIds.add(nodeId);
-    state.depth = "expanded";
-  }
-  if (state.expandedNodeIds.size === 0) state.depth = "overview";
-  state.focusSubflowId = null;
-  renderFlow();
-}
-
-function focusNodeSubflow(nodeId) {
-  const parent = getParentNode(getNodeById(nodeId));
-  if (!parent?.expands) return;
-  state.expandedNodeIds.add(parent.id);
-  state.depth = "focus";
-  state.focusSubflowId = parent.expands;
-  flowScroll.scrollLeft = 0;
-  renderFlow();
-}
-
-function syncDepthControls() {
-  const story = stories.find((item) => item.id === state.storyId);
-  const hasSubflows = getVisibleNodes().some((node) => node.expands && isNodeInStory(node.id, story));
-  document.querySelectorAll("#depth-control button").forEach((button) => {
-    const active = button.dataset.depth === state.depth;
-    button.classList.toggle("is-active", active);
-    button.setAttribute("aria-pressed", String(active));
-    button.disabled = !hasSubflows && button.dataset.depth !== "overview";
+  const shouldResetPosition = state.activeSubflowId !== node.expands
+    || state.activeSubflowParentId !== node.id
+    || subflowOverlay.hidden;
+  state.activeSubflowId = node.expands;
+  state.activeSubflowParentId = node.id;
+  lastSubflowTrigger = trigger;
+  if (shouldResetPosition) subflowPanelPosition = null;
+  state.selectedNodeId = node.id;
+  document.querySelectorAll(".flow-node, .subflow-node").forEach((button) => {
+    button.classList.toggle("is-selected", button.dataset.nodeId === node.id);
   });
+  renderDetail(node);
+  detailPanel.classList.add("is-open");
+  renderActiveSubflow({ resetPosition: shouldResetPosition });
+}
 
-  const focused = getSubflow(state.focusSubflowId);
-  focusBreadcrumb.hidden = !focused;
-  if (focused) {
-    const parent = getNodeById(focused.parentId);
-    document.querySelector("#focus-title").textContent = parent?.title ?? focused.title;
+function closeSubflowPanel({ restoreFocus = true } = {}) {
+  const trigger = lastSubflowTrigger;
+  state.activeSubflowId = null;
+  state.activeSubflowParentId = null;
+  subflowOverlay.hidden = true;
+  document.body.classList.remove("is-subflow-open");
+  subflowDialogBody.innerHTML = "";
+  lastSubflowTrigger = null;
+  subflowDialog.style.removeProperty("left");
+  subflowDialog.style.removeProperty("top");
+  subflowDialog.style.removeProperty("right");
+  if (restoreFocus) {
+    const fallback = trigger?.isConnected
+      ? trigger
+      : document.querySelector(`[data-toggle-node="${CSS.escape(state.selectedNodeId ?? "")}"]`);
+    fallback?.focus();
   }
+}
+
+function renderActiveSubflow({ resetPosition = false } = {}) {
+  const subflow = getSubflow(state.activeSubflowId);
+  const parent = getNodeById(state.activeSubflowParentId);
+  const story = stories.find((item) => item.id === state.storyId);
+  if (!subflow || !parent || !isVisibleByPath(parent) || !isNodeInStory(parent.id, story)) {
+    if (!subflowOverlay.hidden) closeSubflowPanel({ restoreFocus: false });
+    return;
+  }
+
+  const visibleNodes = getVisibleNodes(subflow.nodes);
+  document.querySelector("#subflow-dialog-kicker").textContent = subflow.kind === "interaction" ? "画面内の動き / 詳細" : "システムの動き / 詳細";
+  document.querySelector("#subflow-dialog-title").textContent = parent.title;
+  document.querySelector("#subflow-dialog-summary").textContent = subflow.summary;
+  document.querySelector("#subflow-dialog-kind").className = `kind-${subflow.kind}`;
+  document.querySelector("#subflow-dialog-kind").textContent = subflowKindLabels[subflow.kind];
+  document.querySelector("#subflow-dialog-count").textContent = `${visibleNodes.length} STEPS`;
+  subflowDialogBody.innerHTML = renderSubflowBoard(subflow);
+  bindNodeInteractions(subflowDialogBody);
+  subflowOverlay.hidden = false;
+  document.body.classList.add("is-subflow-open");
+  requestAnimationFrame(() => {
+    if (resetPosition || !subflowPanelPosition) {
+      if (subflowPanelSize) applySubflowPanelSize(subflowPanelSize, { left: PANEL_GUTTER, top: PANEL_GUTTER });
+      positionSubflowPanel();
+    } else {
+      applySubflowPanelSize(subflowPanelSize, subflowPanelPosition);
+      applySubflowPanelPosition(subflowPanelPosition);
+    }
+    drawSubflowEdges(subflowDialogBody.querySelector(".subflow-board"));
+  });
+}
+
+function rectsIntersect(first, second) {
+  return Math.max(0, Math.min(first.right, second.right) - Math.max(first.left, second.left))
+    * Math.max(0, Math.min(first.bottom, second.bottom) - Math.max(first.top, second.top)) > 0;
+}
+
+function getSubflowPanelSize() {
+  const rect = subflowDialog.getBoundingClientRect();
+  return {
+    width: subflowDialog.offsetWidth || rect.width,
+    height: subflowDialog.offsetHeight || rect.height,
+  };
+}
+
+function clampSubflowPanelSize(size, position = subflowPanelPosition ?? { left: PANEL_GUTTER, top: PANEL_GUTTER }) {
+  const maxWidth = Math.max(0, window.innerWidth - position.left - PANEL_GUTTER);
+  const maxHeight = Math.max(0, window.innerHeight - position.top - PANEL_GUTTER);
+  const minWidth = Math.min(PANEL_MIN_WIDTH, Math.max(0, window.innerWidth - PANEL_GUTTER * 2));
+  const minHeight = Math.min(PANEL_MIN_HEIGHT, Math.max(0, window.innerHeight - PANEL_GUTTER * 2));
+  return {
+    width: Math.min(Math.max(minWidth, size.width), maxWidth || minWidth),
+    height: Math.min(Math.max(minHeight, size.height), maxHeight || minHeight),
+  };
+}
+
+function applySubflowPanelSize(size, position = subflowPanelPosition) {
+  if (!size || subflowOverlay.hidden) return;
+  const safePosition = position ?? { left: PANEL_GUTTER, top: PANEL_GUTTER };
+  const clamped = clampSubflowPanelSize(size, safePosition);
+  subflowPanelSize = clamped;
+  subflowDialog.style.width = `${clamped.width}px`;
+  subflowDialog.style.height = `${clamped.height}px`;
+}
+
+function scheduleSubflowEdgeRedraw() {
+  if (subflowEdgeFrame) return;
+  subflowEdgeFrame = requestAnimationFrame(() => {
+    subflowEdgeFrame = null;
+    drawEdges();
+    drawSubflowEdges(subflowDialogBody.querySelector(".subflow-board"));
+  });
+}
+
+function clampSubflowPanelPosition(position) {
+  const { width, height } = getSubflowPanelSize();
+  const maxLeft = Math.max(PANEL_GUTTER, window.innerWidth - width - PANEL_GUTTER);
+  const maxTop = Math.max(PANEL_GUTTER, window.innerHeight - height - PANEL_GUTTER);
+  return {
+    left: Math.min(Math.max(PANEL_GUTTER, position.left), maxLeft),
+    top: Math.min(Math.max(PANEL_GUTTER, position.top), maxTop),
+  };
+}
+
+function applySubflowPanelPosition(position) {
+  if (subflowOverlay.hidden) return;
+  const clamped = clampSubflowPanelPosition(position);
+  subflowPanelPosition = clamped;
+  subflowDialog.style.left = `${clamped.left}px`;
+  subflowDialog.style.top = `${clamped.top}px`;
+  subflowDialog.style.right = "auto";
+}
+
+function positionSubflowPanel() {
+  if (subflowOverlay.hidden) return;
+  const { width: panelWidth, height: panelHeight } = getSubflowPanelSize();
+  const source = lastSubflowTrigger?.closest?.("[data-top-node-id]")
+    ?? document.querySelector(`[data-top-node-id="${CSS.escape(state.activeSubflowParentId ?? "")}"]`);
+  const sourceRect = source?.getBoundingClientRect();
+  const baseLeft = sourceRect ? sourceRect.left : window.innerWidth - panelWidth - PANEL_GUTTER;
+  const baseTop = sourceRect ? sourceRect.top : PANEL_GUTTER;
+  const balancedLeft = sourceRect
+    ? Math.max(PANEL_GUTTER, Math.min(Math.round(window.innerWidth * 0.28), window.innerWidth - panelWidth - PANEL_GUTTER))
+    : baseLeft;
+  const candidates = sourceRect
+    ? [
+      { left: balancedLeft, top: sourceRect.bottom + PANEL_GAP },
+      { left: sourceRect.left - panelWidth - PANEL_GAP, top: baseTop },
+      { left: sourceRect.right + PANEL_GAP, top: baseTop },
+      { left: baseLeft, top: sourceRect.top - panelHeight - PANEL_GAP },
+    ]
+    : [{ left: baseLeft, top: baseTop }];
+  const safeCandidate = candidates.find((candidate) => {
+    const position = clampSubflowPanelPosition(candidate);
+    const candidateRect = new DOMRect(position.left, position.top, panelWidth, panelHeight);
+    return !sourceRect || !rectsIntersect(candidateRect, sourceRect);
+  }) ?? candidates[0];
+  applySubflowPanelPosition(safeCandidate);
+}
+
+function moveSubflowPanelBy(deltaX, deltaY) {
+  const rect = subflowDialog.getBoundingClientRect();
+  const current = subflowPanelPosition ?? { left: rect.left, top: rect.top };
+  applySubflowPanelPosition({ left: current.left + deltaX, top: current.top + deltaY });
+}
+
+function resizeSubflowPanelBy(deltaWidth, deltaHeight) {
+  if (subflowOverlay.hidden) return;
+  const rect = subflowDialog.getBoundingClientRect();
+  const position = subflowPanelPosition ?? { left: rect.left, top: rect.top };
+  applySubflowPanelSize({
+    width: rect.width + deltaWidth,
+    height: rect.height + deltaHeight,
+  }, position);
+  scheduleSubflowEdgeRedraw();
 }
 
 function updateScope() {
@@ -906,10 +929,6 @@ function updateScope() {
 }
 
 function updateBracket(story, visibleScopeIds) {
-  if (state.depth === "focus") {
-    storyBracket.style.opacity = "0";
-    return;
-  }
   const elements = visibleScopeIds
     .map((id) => document.querySelector(`[data-top-node-id="${CSS.escape(id)}"]`))
     .filter(Boolean);
@@ -936,6 +955,8 @@ function selectNode(nodeId) {
   });
   renderDetail(getNodeById(nodeId));
   detailPanel.classList.add("is-open");
+  const selected = getNodeById(nodeId);
+  if (!(selected?.isChild && selected.subflowId === state.activeSubflowId)) renderActiveSubflow();
   requestAnimationFrame(drawEdges);
 }
 
@@ -994,34 +1015,27 @@ function renderDetail(node) {
 
     ${subflow && !node.isChild ? `
       <section class="detail-section detail-subflow">
-        <h3>Realization flow</h3>
+        <h3>詳細フロー</h3>
         <div class="detail-subflow-card">
-          <span>REALIZATION / ${escapeHtml(subflowKindLabels[subflow.kind])}</span>
+          <span>${subflow.kind === "interaction" ? "画面内の動き" : "システムの動き"} / ${escapeHtml(subflowKindLabels[subflow.kind])}</span>
           <strong>${escapeHtml(subflow.title)}</strong>
           <p>${escapeHtml(subflow.summary)}</p>
           <div><b>${subflow.nodes.length}</b> steps · <b>${subflow.edges.length}</b> relations</div>
         </div>
         <div class="detail-subflow-actions">
-          <button type="button" id="detail-expand-button">${state.expandedNodeIds.has(node.id) ? "実現フローを閉じる" : "体験フロー内で開く"}</button>
-          <button type="button" id="detail-focus-button">実現フローだけを見る</button>
+          <button type="button" id="detail-subflow-button">詳細パネルで見る</button>
         </div>
       </section>
     ` : ""}
   `;
 
-  document.querySelector("#detail-expand-button")?.addEventListener("click", () => toggleExpandedNode(node.id));
-  document.querySelector("#detail-focus-button")?.addEventListener("click", () => focusNodeSubflow(node.id));
+  document.querySelector("#detail-subflow-button")?.addEventListener("click", (event) => openSubflowPanel(node.id, event.currentTarget));
 }
 
 function drawEdges() {
   const svgRect = edgeLayer.getBoundingClientRect();
   edgeLayer.setAttribute("viewBox", `0 0 ${svgRect.width} ${svgRect.height}`);
   edgeLayer.querySelectorAll(".edge-path, .edge-foreign").forEach((element) => element.remove());
-
-  if (state.depth === "focus") {
-    document.querySelectorAll(".subflow-board").forEach((board) => drawSubflowEdges(board));
-    return;
-  }
 
   const story = stories.find((item) => item.id === state.storyId);
   if (!story) return;
@@ -1087,6 +1101,7 @@ function drawEdges() {
 }
 
 function drawSubflowEdges(board) {
+  if (!board) return;
   const subflow = getSubflow(board.dataset.subflowId);
   const layer = board.querySelector("[data-subflow-edge-layer]");
   if (!subflow || !layer) return;
@@ -1148,24 +1163,14 @@ function drawSubflowEdges(board) {
 }
 
 function updateFlowSummary() {
-  const focused = getSubflow(state.focusSubflowId);
-  if (state.depth === "focus" && focused) {
-    const visibleChildren = getVisibleNodes(focused.nodes);
-    document.querySelector("#flow-summary").innerHTML = `
-      <span><b>${visibleChildren.length}</b> 詳細ノード</span>
-      <span><b>${focused.tracks.length}</b> トラック</span>
-      <span><b>1</b> 親ノード</span>
-    `;
-    return;
-  }
-
   const visibleNodes = getVisibleNodes();
-  const visibleChildren = getExpandedParents()
-    .flatMap((parent) => getVisibleNodes(getSubflow(parent.expands)?.nodes ?? []));
+  const visibleChildren = subflows
+    .filter((subflow) => subflow.parentId && visibleNodes.some((node) => node.id === subflow.parentId))
+    .flatMap((subflow) => getVisibleNodes(subflow.nodes));
   document.querySelector("#flow-summary").innerHTML = `
     <span><b>${visibleNodes.length}</b> ノード</span>
     <span><b>UX</b> Experience</span>
-    <span><b>${visibleChildren.length}</b> 実現ノード</span>
+    <span><b>${visibleChildren.length}</b> 詳細ノード</span>
   `;
 }
 
@@ -1189,49 +1194,12 @@ document.querySelectorAll("#path-filter button").forEach((button) => {
     const selectedStillVisible = selected && isVisibleByPath(selected)
       && (!selected.isChild || isVisibleByPath(getParentNode(selected)));
     if (!selectedStillVisible) {
-      state.selectedNodeId = null;
-      renderDetail(null);
+      const parent = selected?.isChild ? getParentNode(selected) : null;
+      state.selectedNodeId = parent && isVisibleByPath(parent) ? parent.id : null;
+      renderDetail(getNodeById(state.selectedNodeId));
     }
+    renderActiveSubflow();
   });
-});
-
-document.querySelectorAll("#depth-control button").forEach((button) => {
-  button.addEventListener("click", () => {
-    const depth = button.dataset.depth;
-    if (depth === "overview") {
-      const selected = getNodeById(state.selectedNodeId);
-      if (selected?.isChild) {
-        state.selectedNodeId = selected.parentId;
-        renderDetail(getNodeById(selected.parentId));
-      }
-      state.depth = "overview";
-      state.focusSubflowId = null;
-      state.expandedNodeIds.clear();
-      renderFlow();
-      return;
-    }
-
-    const parent = getSelectedCompoundParent();
-    if (!parent) {
-      showToast("この仕様には展開できる実現フローがありません");
-      return;
-    }
-    state.expandedNodeIds.add(parent.id);
-    if (depth === "focus") {
-      focusNodeSubflow(parent.id);
-    } else {
-      state.depth = "expanded";
-      state.focusSubflowId = null;
-      renderFlow();
-    }
-  });
-});
-
-document.querySelector("#focus-back-button").addEventListener("click", () => {
-  state.depth = "expanded";
-  state.focusSubflowId = null;
-  flowScroll.scrollLeft = 0;
-  renderFlow();
 });
 
 document.querySelector("#fit-button").addEventListener("click", () => {
@@ -1261,6 +1229,108 @@ document.querySelector("#spec-error-close").addEventListener("click", () => {
   specError.hidden = true;
 });
 document.querySelector("#detail-close").addEventListener("click", () => detailPanel.classList.remove("is-open"));
+
+subflowDialogClose.addEventListener("click", () => closeSubflowPanel());
+document.addEventListener("keydown", (event) => {
+  if (subflowOverlay.hidden) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeSubflowPanel();
+  }
+});
+
+function finishSubflowDrag() {
+  if (!subflowDragState) return;
+  subflowDialogHeader.classList.remove("is-dragging");
+  document.body.classList.remove("is-subflow-dragging");
+  subflowDragState = null;
+}
+
+subflowDialogHeader.addEventListener("pointerdown", (event) => {
+  if (event.button !== 0 || event.target.closest("button, a, input, select, textarea")) return;
+  const rect = subflowDialog.getBoundingClientRect();
+  subflowDragState = {
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+    startLeft: rect.left,
+    startTop: rect.top,
+  };
+  subflowDialogHeader.classList.add("is-dragging");
+  document.body.classList.add("is-subflow-dragging");
+  subflowDialogHeader.setPointerCapture(event.pointerId);
+  event.preventDefault();
+});
+
+subflowDialogHeader.addEventListener("pointermove", (event) => {
+  if (!subflowDragState || event.pointerId !== subflowDragState.pointerId) return;
+  applySubflowPanelPosition({
+    left: subflowDragState.startLeft + event.clientX - subflowDragState.startX,
+    top: subflowDragState.startTop + event.clientY - subflowDragState.startY,
+  });
+  event.preventDefault();
+});
+
+subflowDialogHeader.addEventListener("pointerup", finishSubflowDrag);
+subflowDialogHeader.addEventListener("pointercancel", finishSubflowDrag);
+subflowDialogHeader.addEventListener("lostpointercapture", finishSubflowDrag);
+subflowDialogHeader.addEventListener("keydown", (event) => {
+  if (subflowOverlay.hidden || !event.altKey || !["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
+  const amount = event.shiftKey ? 80 : 24;
+  const deltaX = event.key === "ArrowRight" ? amount : event.key === "ArrowLeft" ? -amount : 0;
+  const deltaY = event.key === "ArrowDown" ? amount : event.key === "ArrowUp" ? -amount : 0;
+  moveSubflowPanelBy(deltaX, deltaY);
+  event.preventDefault();
+});
+
+function finishSubflowResize() {
+  if (!subflowResizeState) return;
+  subflowResizeHandle.classList.remove("is-resizing");
+  document.body.classList.remove("is-subflow-resizing");
+  subflowResizeState = null;
+  scheduleSubflowEdgeRedraw();
+}
+
+subflowResizeHandle.addEventListener("pointerdown", (event) => {
+  if (event.button !== 0 || subflowOverlay.hidden) return;
+  const rect = subflowDialog.getBoundingClientRect();
+  subflowResizeState = {
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+    startWidth: rect.width,
+    startHeight: rect.height,
+    left: rect.left,
+    top: rect.top,
+  };
+  subflowResizeHandle.classList.add("is-resizing");
+  document.body.classList.add("is-subflow-resizing");
+  subflowResizeHandle.setPointerCapture(event.pointerId);
+  event.preventDefault();
+  event.stopPropagation();
+});
+
+subflowResizeHandle.addEventListener("pointermove", (event) => {
+  if (!subflowResizeState || event.pointerId !== subflowResizeState.pointerId) return;
+  applySubflowPanelSize({
+    width: subflowResizeState.startWidth + event.clientX - subflowResizeState.startX,
+    height: subflowResizeState.startHeight + event.clientY - subflowResizeState.startY,
+  }, { left: subflowResizeState.left, top: subflowResizeState.top });
+  scheduleSubflowEdgeRedraw();
+  event.preventDefault();
+});
+
+subflowResizeHandle.addEventListener("pointerup", finishSubflowResize);
+subflowResizeHandle.addEventListener("pointercancel", finishSubflowResize);
+subflowResizeHandle.addEventListener("lostpointercapture", finishSubflowResize);
+subflowResizeHandle.addEventListener("keydown", (event) => {
+  if (subflowOverlay.hidden || !["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
+  const amount = event.shiftKey ? 80 : 24;
+  const deltaWidth = event.key === "ArrowRight" ? amount : event.key === "ArrowLeft" ? -amount : 0;
+  const deltaHeight = event.key === "ArrowDown" ? amount : event.key === "ArrowUp" ? -amount : 0;
+  resizeSubflowPanelBy(deltaWidth, deltaHeight);
+  event.preventDefault();
+});
 
 const legend = document.querySelector("#legend-popover");
 document.querySelector("#help-button").addEventListener("click", () => {
@@ -1301,7 +1371,17 @@ flowScroll.addEventListener("scroll", () => {
   requestAnimationFrame(drawEdges);
 }, { passive: true });
 
-window.addEventListener("resize", () => requestAnimationFrame(drawEdges));
+window.addEventListener("resize", () => requestAnimationFrame(() => {
+  if (!subflowOverlay.hidden) {
+    const rect = subflowDialog.getBoundingClientRect();
+    const position = subflowPanelPosition ?? { left: rect.left, top: rect.top };
+    const safePosition = clampSubflowPanelPosition(position);
+    applySubflowPanelPosition(safePosition);
+    applySubflowPanelSize(subflowPanelSize ?? getSubflowPanelSize(), safePosition);
+  }
+  drawEdges();
+}));
+subflowDialogBody.addEventListener("scroll", scheduleSubflowEdgeRedraw, true);
 
 async function bootstrap() {
   const specUrl = new URLSearchParams(window.location.search).get("spec");

@@ -2,9 +2,13 @@ import { load as parseYaml } from "js-yaml";
 import bundledSpecYaml from "../specs/login.yaml?raw";
 
 const NODE_TYPES = new Set(["view", "action", "command", "integration", "decision", "event", "state"]);
+const EXPERIENCE_NODE_TYPES = new Set(["view", "action", "event", "state"]);
 const EDGE_TYPES = new Set(["sequence", "triggers", "produces", "reads", "writes", "requests", "responds", "transitions", "returns", "enables"]);
 const NODE_PATHS = new Set(["happy", "exception", "both"]);
 const DEFAULT_PATHS = new Set(["happy", "exception", "all"]);
+const SUBFLOW_KINDS = new Set(["interaction", "orchestration"]);
+const GROUP_MODES = new Set(["unordered", "parallel"]);
+const JOIN_MODES = new Set(["all", "any"]);
 const ID_PATTERN = /^[A-Za-z][A-Za-z0-9_-]*$/;
 
 const typeLabels = {
@@ -30,6 +34,16 @@ const edgeTypeLabels = {
   enables: "有効化",
 };
 
+const subflowKindLabels = {
+  interaction: "INTERACTION",
+  orchestration: "ORCHESTRATION",
+};
+
+const groupModeLabels = {
+  unordered: "ANY ORDER",
+  parallel: "PARALLEL",
+};
+
 const lanePalette = [
   ["var(--cyan)", "var(--cyan-soft)"],
   ["var(--blue)", "var(--blue-soft)"],
@@ -49,7 +63,6 @@ let subflows = [];
 const state = {
   storyId: null,
   path: "happy",
-  level: 2,
   selectedNodeId: null,
   sourceName: "",
   depth: "overview",
@@ -85,6 +98,46 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+function assignAutoColumns(nodeList, edgeList) {
+  const nodeById = new Map(nodeList.map((node) => [node.id, node]));
+  const sourceOrder = new Map(nodeList.map((node, index) => [node.id, index]));
+  const incomingCount = new Map(nodeList.map((node) => [node.id, 0]));
+  const outgoing = new Map(nodeList.map((node) => [node.id, []]));
+  const rank = new Map(nodeList.map((node) => [node.id, 1]));
+
+  edgeList
+    .filter((edge) => !edge.loop && nodeById.has(edge.from) && nodeById.has(edge.to))
+    .forEach((edge) => {
+      outgoing.get(edge.from).push(edge.to);
+      incomingCount.set(edge.to, incomingCount.get(edge.to) + 1);
+    });
+
+  const queue = nodeList
+    .filter((node) => incomingCount.get(node.id) === 0)
+    .map((node) => node.id);
+  const processed = new Set();
+
+  while (queue.length) {
+    queue.sort((left, right) => sourceOrder.get(left) - sourceOrder.get(right));
+    const currentId = queue.shift();
+    processed.add(currentId);
+    outgoing.get(currentId).forEach((nextId) => {
+      rank.set(nextId, Math.max(rank.get(nextId), rank.get(currentId) + 1));
+      incomingCount.set(nextId, incomingCount.get(nextId) - 1);
+      if (incomingCount.get(nextId) === 0) queue.push(nextId);
+    });
+  }
+
+  nodeList.forEach((node, index) => {
+    node.column = processed.has(node.id) ? rank.get(node.id) : index + 1;
+  });
+}
+
+function getSubflowSpan(subflow) {
+  const maxColumn = Math.max(...subflow.nodes.map((node) => node.column), 1);
+  return Math.min(Math.max(maxColumn, 4), 8);
 }
 
 function validateSpec(raw) {
@@ -138,27 +191,20 @@ function validateSpec(raw) {
 
   const normalizeNode = (nodeValue, path, placementKey) => {
     const node = objectAt(nodeValue, path);
-    const title = objectAt(node.title, `${path}.title`);
     const detail = objectAt(node.detail, `${path}.detail`);
     const behavior = objectAt(detail.behavior, `${path}.detail.behavior`);
-    const column = Number(node.column);
-    if (!Number.isInteger(column) || column < 1) {
-      errors.push(`${path}.column: 1以上の整数が必要です`);
-    }
+    const nodePath = enumAt(node.path, NODE_PATHS, `${path}.path`);
 
     return {
       id: idAt(node.id, `${path}.id`),
-      lane: placementKey === "lane" ? idAt(node.lane, `${path}.lane`) : "",
+      lane: placementKey === "experience" ? (nodePath === "exception" ? "exception" : "experience") : "",
       track: placementKey === "track" ? idAt(node.track, `${path}.track`) : "",
-      column: Number.isInteger(column) && column > 0 ? column : 1,
-      type: enumAt(node.type, NODE_TYPES, `${path}.type`),
-      path: enumAt(node.path, NODE_PATHS, `${path}.path`),
+      column: 1,
+      type: enumAt(node.type, placementKey === "experience" ? EXPERIENCE_NODE_TYPES : NODE_TYPES, `${path}.type`),
+      path: nodePath,
       expands: optionalIdAt(node.expands, `${path}.expands`),
-      title: {
-        1: stringAt(title.level1, `${path}.title.level1`),
-        2: stringAt(title.level2, `${path}.title.level2`),
-        3: stringAt(title.level3, `${path}.title.level3`),
-      },
+      join: node.join === undefined ? "" : enumAt(node.join, JOIN_MODES, `${path}.join`),
+      title: stringAt(node.title, `${path}.title`),
       tech: stringAt(node.technical, `${path}.technical`),
       description: stringAt(detail.description, `${path}.detail.description`),
       given: stringAt(behavior.given, `${path}.detail.behavior.given`),
@@ -185,8 +231,8 @@ function validateSpec(raw) {
   };
 
   const root = objectAt(raw, "root");
-  if (root.schemaVersion !== 2) {
-    errors.push("schemaVersion: 現在サポートしている値は 2 です");
+  if (root.schemaVersion !== 3) {
+    throw new SpecValidationError(["schemaVersion: 現在サポートしている値は 3 です"]);
   }
 
   const scenarioRaw = objectAt(root.scenario, "scenario");
@@ -199,24 +245,13 @@ function validateSpec(raw) {
     status: stringAt(scenarioRaw.status, "scenario.status"),
     defaultStory: idAt(scenarioRaw.defaultStory, "scenario.defaultStory"),
     defaultPath: enumAt(scenarioRaw.defaultPath, DEFAULT_PATHS, "scenario.defaultPath"),
-    defaultLevel: Number(scenarioRaw.defaultLevel),
     selectedNode: idAt(scenarioRaw.selectedNode, "scenario.selectedNode"),
   };
 
-  if (![1, 2, 3].includes(normalizedScenario.defaultLevel)) {
-    errors.push("scenario.defaultLevel: 1 / 2 / 3 のいずれかが必要です");
-    normalizedScenario.defaultLevel = 2;
-  }
-
-  const normalizedLanes = arrayAt(root.lanes, "lanes").map((laneValue, index) => {
-    const lane = objectAt(laneValue, `lanes[${index}]`);
-    return {
-      id: idAt(lane.id, `lanes[${index}].id`),
-      label: stringAt(lane.label, `lanes[${index}].label`),
-      code: stringAt(lane.code, `lanes[${index}].code`),
-      subtitle: stringAt(lane.subtitle, `lanes[${index}].subtitle`),
-    };
-  });
+  const normalizedLanes = [
+    { id: "experience", label: "ユーザー", code: "UX", subtitle: "experience" },
+    { id: "exception", label: "エラー時", code: "EX", subtitle: "recovery" },
+  ];
 
   const normalizedStories = arrayAt(root.stories, "stories").map((storyValue, index) => {
     const story = objectAt(storyValue, `stories[${index}]`);
@@ -228,17 +263,14 @@ function validateSpec(raw) {
     };
   });
 
-  const normalizedNodes = arrayAt(root.nodes, "nodes").map((nodeValue, index) => normalizeNode(nodeValue, `nodes[${index}]`, "lane"));
-  const normalizedEdges = arrayAt(root.edges, "edges", true).map((edgeValue, index) => normalizeEdge(edgeValue, `edges[${index}]`));
+  const experienceRaw = objectAt(root.experience, "experience");
+  const normalizedNodes = arrayAt(experienceRaw.nodes, "experience.nodes").map((nodeValue, index) => normalizeNode(nodeValue, `experience.nodes[${index}]`, "experience"));
+  const normalizedEdges = arrayAt(experienceRaw.edges, "experience.edges", true).map((edgeValue, index) => normalizeEdge(edgeValue, `experience.edges[${index}]`));
 
   const subflowsRaw = objectAt(root.subflows, "subflows");
   const normalizedSubflows = Object.entries(subflowsRaw).map(([subflowKey, subflowValue]) => {
     const path = `subflows.${subflowKey}`;
     const subflow = objectAt(subflowValue, path);
-    const span = Number(subflow.span ?? 5);
-    if (!Number.isInteger(span) || span < 2 || span > 8) {
-      errors.push(`${path}.span: 2〜8の整数が必要です`);
-    }
     const tracks = arrayAt(subflow.tracks, `${path}.tracks`).map((trackValue, index) => {
       const track = objectAt(trackValue, `${path}.tracks[${index}]`);
       return {
@@ -247,13 +279,31 @@ function validateSpec(raw) {
         code: stringAt(track.code, `${path}.tracks[${index}].code`),
       };
     });
+    const groupsRaw = objectAt(subflow.groups, `${path}.groups`);
+    const groups = Object.entries(groupsRaw).map(([groupKey, groupValue]) => {
+      const groupPath = `${path}.groups.${groupKey}`;
+      const group = objectAt(groupValue, groupPath);
+      return {
+        id: idAt(groupKey, groupPath),
+        label: stringAt(group.label, `${groupPath}.label`),
+        mode: enumAt(group.mode, GROUP_MODES, `${groupPath}.mode`),
+        members: arrayAt(group.members, `${groupPath}.members`).map((memberId, index) => idAt(memberId, `${groupPath}.members[${index}]`)),
+      };
+    });
+    const exitsRaw = objectAt(subflow.exits, `${path}.exits`);
 
     return {
       id: idAt(subflowKey, path),
+      kind: enumAt(subflow.kind, SUBFLOW_KINDS, `${path}.kind`),
       title: stringAt(subflow.title, `${path}.title`),
       summary: stringAt(subflow.summary, `${path}.summary`),
-      span: Number.isInteger(span) && span >= 2 && span <= 8 ? span : 5,
       tracks,
+      groups,
+      entry: arrayAt(subflow.entry, `${path}.entry`).map((nodeId, index) => idAt(nodeId, `${path}.entry[${index}]`)),
+      exits: {
+        happy: arrayAt(exitsRaw.happy, `${path}.exits.happy`, true).map((nodeId, index) => idAt(nodeId, `${path}.exits.happy[${index}]`)),
+        exception: arrayAt(exitsRaw.exception, `${path}.exits.exception`, true).map((nodeId, index) => idAt(nodeId, `${path}.exits.exception[${index}]`)),
+      },
       nodes: arrayAt(subflow.nodes, `${path}.nodes`).map((nodeValue, index) => normalizeNode(nodeValue, `${path}.nodes[${index}]`, "track")),
       edges: arrayAt(subflow.edges, `${path}.edges`, true).map((edgeValue, index) => normalizeEdge(edgeValue, `${path}.edges[${index}]`)),
       parentId: "",
@@ -298,6 +348,7 @@ function validateSpec(raw) {
     const trackIds = checkUniqueIds(subflow.tracks, `subflows.${subflow.id}.tracks`);
     checkUniqueIds(subflow.nodes, `subflows.${subflow.id}.nodes`);
     const childIds = new Set(subflow.nodes.map((node) => node.id));
+    checkUniqueIds(subflow.groups, `subflows.${subflow.id}.groups`);
     subflow.nodes.forEach((node) => {
       if (!trackIds.has(node.track)) {
         errors.push(`subflows.${subflow.id}.nodes.${node.id}.track: トラック「${node.track}」が存在しません`);
@@ -305,6 +356,20 @@ function validateSpec(raw) {
       if (node.expands) {
         errors.push(`subflows.${subflow.id}.nodes.${node.id}.expands: 現在のビューは2階層目の展開に対応していません`);
       }
+      if (node.join === "all") {
+        const incomingCount = subflow.edges.filter((edge) => !edge.loop && edge.to === node.id).length;
+        if (incomingCount < 2) errors.push(`subflows.${subflow.id}.nodes.${node.id}.join: allには2本以上の入力エッジが必要です`);
+      }
+    });
+    subflow.groups.forEach((group) => {
+      const duplicateMembers = group.members.filter((id, index) => group.members.indexOf(id) !== index);
+      if (duplicateMembers.length) errors.push(`subflows.${subflow.id}.groups.${group.id}.members: 同じノードが重複しています`);
+      group.members.forEach((nodeId) => {
+        if (!childIds.has(nodeId)) errors.push(`subflows.${subflow.id}.groups.${group.id}.members: 子ノード「${nodeId}」が存在しません`);
+      });
+    });
+    [...subflow.entry, ...subflow.exits.happy, ...subflow.exits.exception].forEach((nodeId) => {
+      if (!childIds.has(nodeId)) errors.push(`subflows.${subflow.id}: entry/exitsの子ノード「${nodeId}」が存在しません`);
     });
     subflow.edges.forEach((edge, index) => {
       if (!childIds.has(edge.from)) errors.push(`subflows.${subflow.id}.edges[${index}].from: 子ノード「${edge.from}」が存在しません`);
@@ -345,10 +410,13 @@ function validateSpec(raw) {
     errors.push("scenario.selectedNode: defaultStoryの範囲に含まれていません");
   }
 
+  assignAutoColumns(normalizedNodes, normalizedEdges);
+  normalizedSubflows.forEach((subflow) => assignAutoColumns(subflow.nodes, subflow.edges));
+
   if (errors.length) throw new SpecValidationError(errors);
 
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     scenario: normalizedScenario,
     lanes: normalizedLanes,
     stories: normalizedStories,
@@ -367,7 +435,6 @@ function applySpec(spec, sourceName) {
   subflows = spec.subflows;
   state.storyId = scenario.defaultStory;
   state.path = scenario.defaultPath;
-  state.level = scenario.defaultLevel;
   state.selectedNodeId = scenario.selectedNode;
   state.sourceName = sourceName;
   state.depth = "overview";
@@ -384,7 +451,7 @@ function applySpec(spec, sourceName) {
   document.querySelector("#scenario-domain").textContent = scenario.domain;
   document.querySelector("#scenario-title").textContent = scenario.title;
   document.querySelector("#scenario-status").innerHTML = `<span></span>${escapeHtml(scenario.status)}`;
-  document.querySelector("#scenario-eyebrow").textContent = `SCENARIO / ${scenario.id.toUpperCase()}`;
+  document.querySelector("#scenario-eyebrow").textContent = `EXPERIENCE / ${scenario.id.toUpperCase()}`;
   document.querySelector("#flow-title").textContent = scenario.heading;
   document.querySelector("#story-count").textContent = String(stories.length);
   document.querySelector("#spec-source").textContent = sourceName;
@@ -396,9 +463,6 @@ function applySpec(spec, sourceName) {
     button.classList.toggle("is-active", active);
     button.setAttribute("aria-pressed", String(active));
   });
-  document.querySelector("#zoom-level").value = String(state.level);
-  document.body.classList.remove("level-1", "level-2", "level-3");
-  document.body.classList.add(`level-${state.level}`);
   document.body.classList.remove("is-focus-mode");
 
   renderStories();
@@ -490,7 +554,8 @@ function getExpandedParents() {
 function getColumnPlan(visibleNodes, expandedParents) {
   const expansionByColumn = new Map();
   expandedParents.forEach((parent) => {
-    const span = getSubflow(parent.expands)?.span ?? 5;
+    const subflow = getSubflow(parent.expands);
+    const span = subflow ? getSubflowSpan(subflow) : 4;
     expansionByColumn.set(parent.column, Math.max(expansionByColumn.get(parent.column) ?? 0, span - 1));
   });
 
@@ -502,7 +567,7 @@ function getColumnPlan(visibleNodes, expandedParents) {
   const maxColumn = Math.max(
     ...visibleNodes.map((node) => {
       const span = expandedParents.some((parent) => parent.id === node.id)
-        ? getSubflow(node.expands)?.span ?? 5
+        ? getSubflowSpan(getSubflow(node.expands))
         : 1;
       return displayColumn(node) + span - 1;
     }),
@@ -562,14 +627,17 @@ function renderFlow() {
   const expandedParents = getExpandedParents();
   const columnPlan = getColumnPlan(visibleNodes, expandedParents);
   flowCanvas.style.setProperty("--column-count", String(columnPlan.maxColumn));
-  laneContainer.innerHTML = lanes
+  const activeLanes = lanes.filter((lane) => visibleNodes.some((node) => node.lane === lane.id));
+  laneContainer.innerHTML = activeLanes
     .map((lane, laneIndex) => {
       const laneNodes = visibleNodes
         .filter((node) => node.lane === lane.id)
         .map((node) => renderNodeSlot(node, columnPlan, expandedParents))
         .join("");
 
-      const [laneColor, laneSoft] = lanePalette[laneIndex % lanePalette.length];
+      const [laneColor, laneSoft] = lane.id === "exception"
+        ? ["var(--coral)", "var(--coral-soft)"]
+        : lanePalette[laneIndex % lanePalette.length];
       return `
         <div class="lane lane-${escapeHtml(lane.id)}" data-lane-id="${escapeHtml(lane.id)}" style="--lane-color: ${laneColor}; --lane-soft: ${laneSoft}">
           <div class="lane-label">
@@ -599,8 +667,8 @@ function renderFocusedFlow(subflow) {
     <div class="focus-stage">
       <div class="focus-stage-heading">
         <div>
-          <p class="focus-kicker">LEVEL 02 / CUTAWAY</p>
-          <h3>${escapeHtml(parent?.title[state.level] ?? subflow.title)}</h3>
+          <p class="focus-kicker">REALIZATION / ${escapeHtml(subflowKindLabels[subflow.kind])}</p>
+          <h3>${escapeHtml(parent?.title ?? subflow.title)}</h3>
           <p>${escapeHtml(subflow.summary)}</p>
         </div>
         <span class="focus-count">${getVisibleNodes(subflow.nodes).length} STEPS</span>
@@ -616,19 +684,19 @@ function renderFocusedFlow(subflow) {
 }
 
 function renderNodeSlot(node, columnPlan, expandedParents) {
-  const title = node.title[state.level];
+  const title = node.title;
   const branchCount = edges.filter((edge) => edge.from === node.id).length;
   const subflow = getSubflow(node.expands);
   const expanded = expandedParents.some((parent) => parent.id === node.id);
   const displayColumn = columnPlan.displayColumn(node);
-  const span = expanded ? subflow?.span ?? 5 : 1;
+  const span = expanded && subflow ? getSubflowSpan(subflow) : 1;
   const commonClasses = `${node.id === state.selectedNodeId ? "is-selected" : ""} ${subflow ? "has-subflow" : ""} ${expanded ? "is-expanded" : ""}`;
 
   if (expanded && subflow) {
     return `
       <div class="node-slot compound-slot" style="grid-column: ${displayColumn + 1} / span ${span}" data-slot-id="${escapeHtml(node.id)}">
         <article
-          class="flow-node compound-node ${commonClasses}"
+          class="flow-node compound-node kind-${escapeHtml(subflow.kind)} ${commonClasses}"
           data-node-id="${escapeHtml(node.id)}"
           data-top-node-id="${escapeHtml(node.id)}"
           data-type="${escapeHtml(node.type)}"
@@ -644,7 +712,7 @@ function renderNodeSlot(node, columnPlan, expandedParents) {
             </div>
           </header>
           <div class="compound-rule">
-            <span>CUTAWAY / ${escapeHtml(subflow.id.toUpperCase())}</span>
+            <span>REALIZATION / ${escapeHtml(subflowKindLabels[subflow.kind])}</span>
             <p>${escapeHtml(subflow.summary)}</p>
           </div>
           ${renderSubflowBoard(subflow, false)}
@@ -671,10 +739,10 @@ function renderNodeSlot(node, columnPlan, expandedParents) {
           ${renderNodeCardContent(node, title, branchCount)}
         </button>
         ${subflow ? `
-          <button class="compound-teaser" type="button" data-toggle-node="${escapeHtml(node.id)}" aria-label="${escapeHtml(title)}の詳細フローを展開">
+          <button class="compound-teaser" type="button" data-toggle-node="${escapeHtml(node.id)}" aria-label="${escapeHtml(title)}の実現フローを展開">
             <span aria-hidden="true">↳</span>
-            <b>${subflow.nodes.length} STEPS</b>
-            <span>詳細を展開 ＋</span>
+            <b>${escapeHtml(subflowKindLabels[subflow.kind])}</b>
+            <span>${subflow.nodes.length} steps ＋</span>
           </button>
         ` : ""}
       </article>
@@ -686,7 +754,7 @@ function renderNodeCardContent(node, title, branchCount) {
   return `
     <span class="node-topline">
       <span class="node-type">${escapeHtml(typeLabels[node.type])}</span>
-      <span class="node-step">${String(node.column).padStart(2, "0")}</span>
+      <span class="node-step">STAGE ${node.column}</span>
     </span>
     <strong>${escapeHtml(title)}</strong>
     <span class="node-detail">${escapeHtml(node.tech)}</span>
@@ -699,6 +767,10 @@ function renderSubflowBoard(subflow, focusMode) {
   const maxColumn = Math.max(...visibleNodes.map((node) => node.column), 1);
   const visibleNodeIds = new Set(visibleNodes.map((node) => node.id));
   const visibleEdgeCount = subflow.edges.filter((edge) => visibleNodeIds.has(edge.from) && visibleNodeIds.has(edge.to) && isVisibleByPath(edge)).length;
+  const visibleGroups = subflow.groups.filter((group) => group.members.some((nodeId) => visibleNodeIds.has(nodeId)));
+  const groupBadges = visibleGroups
+    .map((group) => `<span class="flow-group-badge mode-${escapeHtml(group.mode)}"><b>${escapeHtml(groupModeLabels[group.mode])}</b>${escapeHtml(group.label)}</span>`)
+    .join("");
   const trackRows = subflow.tracks
     .map((track, index) => `
       <div class="subflow-track" style="grid-column: 1 / -1; grid-row: ${index + 1}">
@@ -721,8 +793,9 @@ function renderSubflowBoard(subflow, focusMode) {
             data-child-node-id="${escapeHtml(node.id)}"
             data-type="${escapeHtml(node.type)}"
             data-path="${escapeHtml(node.path)}"
+            data-group="${escapeHtml(subflow.groups.find((group) => group.members.includes(node.id))?.id ?? "")}"
           >
-            ${renderNodeCardContent(node, node.title[state.level], branchCount)}
+            ${renderNodeCardContent(node, node.title, branchCount)}
           </button>
         </div>
       `;
@@ -730,12 +803,14 @@ function renderSubflowBoard(subflow, focusMode) {
     .join("");
 
   return `
-    <section class="subflow-board ${focusMode ? "is-focus-board" : ""}" data-subflow-id="${escapeHtml(subflow.id)}">
+    <section class="subflow-board kind-${escapeHtml(subflow.kind)} ${focusMode ? "is-focus-board" : ""}" data-subflow-id="${escapeHtml(subflow.id)}">
       <div class="subflow-board-meta">
+        <span class="subflow-kind">${escapeHtml(subflowKindLabels[subflow.kind])}</span>
         <span>${visibleNodes.length} nodes</span>
         <span>${visibleEdgeCount} relations</span>
         <span>${subflow.tracks.length} tracks</span>
       </div>
+      ${groupBadges ? `<div class="flow-group-strip">${groupBadges}</div>` : ""}
       <div class="subflow-grid" style="--sub-columns: ${maxColumn}; --sub-tracks: ${subflow.tracks.length}">
         <svg class="subflow-edge-layer" data-subflow-edge-layer="${escapeHtml(subflow.id)}" aria-hidden="true">
           <defs>
@@ -806,7 +881,7 @@ function syncDepthControls() {
   focusBreadcrumb.hidden = !focused;
   if (focused) {
     const parent = getNodeById(focused.parentId);
-    document.querySelector("#focus-title").textContent = parent?.title[state.level] ?? focused.title;
+    document.querySelector("#focus-title").textContent = parent?.title ?? focused.title;
   }
 }
 
@@ -881,14 +956,14 @@ function renderDetail(node) {
   const parent = node.isChild ? getNodeById(node.parentId) : null;
   const subflow = getSubflow(node.isChild ? node.subflowId : node.expands);
   const lineage = parent && subflow
-    ? `<div class="detail-lineage"><span>全体</span><b>${escapeHtml(parent.title[state.level])}</b><i>/</i><span>詳細</span><b>${escapeHtml(subflow.title)}</b></div>`
+    ? `<div class="detail-lineage"><span>Experience</span><b>${escapeHtml(parent.title)}</b><i>/</i><span>${escapeHtml(subflowKindLabels[subflow.kind])}</span><b>${escapeHtml(subflow.title)}</b></div>`
     : "";
 
   detailContent.innerHTML = `
     <div class="detail-header">
       ${lineage}
       <div class="detail-type"><span></span>${escapeHtml(typeLabels[node.type])}</div>
-      <h2 id="detail-title">${escapeHtml(node.title[state.level])}</h2>
+      <h2 id="detail-title">${escapeHtml(node.title)}</h2>
       <p class="detail-description">${escapeHtml(node.description)}</p>
       <code class="detail-id">${escapeHtml(node.id)}</code>
     </div>
@@ -919,16 +994,16 @@ function renderDetail(node) {
 
     ${subflow && !node.isChild ? `
       <section class="detail-section detail-subflow">
-        <h3>Nested flow</h3>
+        <h3>Realization flow</h3>
         <div class="detail-subflow-card">
-          <span>CUTAWAY / ${escapeHtml(subflow.id.toUpperCase())}</span>
+          <span>REALIZATION / ${escapeHtml(subflowKindLabels[subflow.kind])}</span>
           <strong>${escapeHtml(subflow.title)}</strong>
           <p>${escapeHtml(subflow.summary)}</p>
           <div><b>${subflow.nodes.length}</b> steps · <b>${subflow.edges.length}</b> relations</div>
         </div>
         <div class="detail-subflow-actions">
-          <button type="button" id="detail-expand-button">${state.expandedNodeIds.has(node.id) ? "詳細を閉じる" : "タイムライン内で展開"}</button>
-          <button type="button" id="detail-focus-button">詳細だけを見る</button>
+          <button type="button" id="detail-expand-button">${state.expandedNodeIds.has(node.id) ? "実現フローを閉じる" : "体験フロー内で開く"}</button>
+          <button type="button" id="detail-focus-button">実現フローだけを見る</button>
         </div>
       </section>
     ` : ""}
@@ -1089,8 +1164,8 @@ function updateFlowSummary() {
     .flatMap((parent) => getVisibleNodes(getSubflow(parent.expands)?.nodes ?? []));
   document.querySelector("#flow-summary").innerHTML = `
     <span><b>${visibleNodes.length}</b> ノード</span>
-    <span><b>${lanes.length}</b> レーン</span>
-    <span><b>${visibleChildren.length}</b> 詳細を展開</span>
+    <span><b>UX</b> Experience</span>
+    <span><b>${visibleChildren.length}</b> 実現ノード</span>
   `;
 }
 
@@ -1120,14 +1195,6 @@ document.querySelectorAll("#path-filter button").forEach((button) => {
   });
 });
 
-document.querySelector("#zoom-level").addEventListener("change", (event) => {
-  state.level = Number(event.target.value);
-  document.body.classList.remove("level-1", "level-2", "level-3");
-  document.body.classList.add(`level-${state.level}`);
-  renderFlow();
-  renderDetail(getNodeById(state.selectedNodeId));
-});
-
 document.querySelectorAll("#depth-control button").forEach((button) => {
   button.addEventListener("click", () => {
     const depth = button.dataset.depth;
@@ -1146,7 +1213,7 @@ document.querySelectorAll("#depth-control button").forEach((button) => {
 
     const parent = getSelectedCompoundParent();
     if (!parent) {
-      showToast("この仕様には展開できる詳細フローがありません");
+      showToast("この仕様には展開できる実現フローがありません");
       return;
     }
     state.expandedNodeIds.add(parent.id);

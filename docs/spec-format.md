@@ -1,184 +1,213 @@
 # 仕様ファイル形式
 
-`schemaVersion: 2` のYAMLまたはJSONを読み込み、シナリオ、レーン、ユーザーストーリー、ノード、エッジ、サブフローからビューを生成します。旧バージョンは読み込みません。
+## 対応バージョン
 
-## 全体構造
+現在のビューは <code>schemaVersion: 3</code> のYAMLまたはJSONだけを読み込みます。v2以前との後方互換はありません。
 
-```yaml
+~~~yaml
 # yaml-language-server: $schema=../schema/sdd-flow.schema.json
-schemaVersion: 2
+schemaVersion: 3
 
 scenario: {}
-lanes: []
 stories: []
-nodes: []
-edges: []
-subflows: {} # 詳細フローがない場合もキーは必須
-```
+experience:
+  nodes: []
+  edges: []
+subflows: {}
+~~~
 
-`scenario` では画面タイトルと初期表示を指定します。
+## Scenario
 
-```yaml
+~~~yaml
 scenario:
   id: login
   project: 会員ポータル
   domain: 認証
   title: ログインしてトップ画面を表示する
-  heading: 情報が入り、変化し、画面に戻るまで
+  heading: ユーザーの操作から価値が届くまで
   status: レビュー中
   defaultStory: US-101
-  defaultPath: happy       # happy / exception / all
-  defaultLevel: 2          # 1 / 2 / 3
-  selectedNode: login-command
-```
+  defaultPath: happy
+  selectedNode: credential-input
+~~~
 
-IDは英字で始め、英数字、`_`、`-`を使用します。`defaultStory` と `selectedNode` は実在するIDを参照する必要があります。
+<code>defaultPath</code> は <code>happy</code>、<code>exception</code>、<code>all</code> のいずれかです。
 
-## レーン
+## User Story
 
-`lane` は「どこで起きるか」を表します。配列順が画面の上から下の順序です。色は配列順に自動で割り当てられます。
+ユーザーストーリーはExperience Flowのノードだけを参照します。Realization Subflowの子ノードは親のスコープを継承します。
 
-```yaml
-lanes:
-  - id: browser
-    label: ユーザー / ブラウザ
-    code: "01"
-    subtitle: front stage
-```
-
-## ユーザーストーリー
-
-ユーザーストーリーはノードではなく、フロー上の変更範囲です。`nodes` に関連ノードIDを並べます。接続数は自動計算されます。
-
-```yaml
+~~~yaml
 stories:
   - id: US-101
     title: 会員としてログインしたい
     state: レビュー中
-    nodes: [login-screen, login-action, login-command]
-```
+    nodes: [login-screen, credential-input, login-attempt, top-screen]
+~~~
 
-## ノード
+## Experience Flow
 
-```yaml
-nodes:
-  - id: login-command
-    lane: system
-    column: 3
-    type: command
-    path: both
-    expands: credential-entry # 任意。詳細フローのID
-    title:
-      level1: ログインを確認
-      level2: ログインを要求する
-      level3: POST /api/session
-    technical: AuthenticateMember
-    detail:
-      description: 認証処理を開始します。
-      behavior:
-        given: 認証情報を受信している
-        when: ログイン要求を受け付ける
-        then: アカウントを照会する
-      assumption: 過剰な試行は制限されます。
-      links: [US-101, CMD-AUTH-01]
-```
+Experience Flowには、ユーザーが操作または観測できる内容だけを置きます。利用できるノード種別は <code>view</code>、<code>action</code>、<code>event</code>、<code>state</code> です。
 
-`type` はノードの意味です。
+<code>command</code>、<code>integration</code>、<code>decision</code> はシステム内部の実現方法なので、Subflowへ定義します。
 
-| type | 意味 |
+~~~yaml
+experience:
+  nodes:
+    - id: login-attempt
+      type: action
+      path: both
+      expands: authentication
+      title: ログインを試行する
+      technical: Submit credentials
+      detail:
+        description: 入力済みの認証情報を送信します。
+        behavior:
+          given: ログイン操作が有効である
+          when: ログインを実行する
+          then: 認証結果に応じた画面へ進む
+        assumption: 送信中は二重送信を防止します。
+        links: [US-101]
+
+  edges:
+    - from: login-attempt
+      to: top-screen
+      type: transitions
+      path: happy
+      label: SUCCESS
+~~~
+
+タイトルは1つの文字列です。L1〜L3のタイトル切り替えはありません。技術的な対応先は <code>technical</code> と <code>detail</code> に分離します。
+
+## Realization Subflow
+
+Experienceノードの <code>expands</code> と、<code>subflows</code> のキーを一致させます。
+
+Subflowには2種類あります。
+
+| kind | 用途 |
 |---|---|
-| `view` | ユーザーが見る状態 |
-| `action` | ユーザーの操作 |
-| `command` | システムへの意図 |
-| `integration` | 外部システムとの連携 |
-| `decision` | ビジネスルールによる判断 |
-| `event` | 確定した事実 |
-| `state` | 保存・更新された状態 |
+| <code>interaction</code> | 入力、画面内検証、ボタン状態などのUI操作 |
+| <code>orchestration</code> | 自システム、外部システム、リソース間の連携 |
 
-`path` は `happy`、`exception`、両方に現れる `both` のいずれかです。
-
-## 複合ノードとサブフロー
-
-全体像では1つに見せたい操作を、実装・テスト時には複数ノードへ分解できます。親ノードの `expands` と、ルート直下の `subflows` のキーを一致させます。
-
-```yaml
-nodes:
-  - id: login-action
-    lane: browser
-    column: 2
-    type: action
-    path: both
-    expands: credential-entry
-    # title / technical / detail は通常のノードと同じ
-
+~~~yaml
 subflows:
   credential-entry:
-    title: 認証情報を入力して送信する
-    summary: 入力、形式検証、ボタン活性化、送信まで
-    span: 6 # タイムライン内で展開したときに使う列数（2〜8）
+    kind: interaction
+    title: 認証情報を入力できる状態にする
+    summary: IDとパスワードを入力し、送信操作を有効にします。
+    entry: [member-id-input, password-input]
+    exits:
+      happy: [login-form-ready]
+      exception: []
     tracks:
-      - id: input
-        label: ユーザー入力
-        code: IN
-      - id: rule
-        label: クライアント検証
-        code: RULE
-    nodes:
-      - id: member-id-input
-        track: input
-        column: 1
-        type: action
-        path: both
-        # title / technical / detail は通常のノードと同じ
-    edges:
-      - from: member-id-input
-        to: member-id-format
-        type: triggers
-        path: both
-```
+      - { id: member-id, label: 会員ID, code: ID }
+      - { id: password, label: パスワード, code: PW }
+      - { id: form-state, label: フォーム状態, code: UI }
+    groups: {}
+    nodes: []
+    edges: []
+~~~
 
-- `track` はサブフロー内だけの小さなレーンです。
-- 子ノードのIDは、トップレベルと他のサブフローを含めて一意にします。
-- ユーザーストーリーには親ノードだけを指定します。子ノードは親のスコープを継承します。
-- 現在のプロトタイプは「トップレベル → 子フロー」の2階層表示です。
+### EntryとExits
 
-どのノードを親として残し、どこから子ノードへ分解するかは、[階層構造の設計ガイド](./hierarchy-guidelines.md)を参照してください。
+- <code>entry</code>: Subflowを開始できる子ノード。複数指定できます。
+- <code>exits.happy</code>: 正常系で親の契約を満たす終了ノード。
+- <code>exits.exception</code>: 異常系として外側へ結果を返す終了ノード。
 
-## エッジ
+入力エラーから再入力へ戻るだけの場合は、異常系exitへ含めません。
 
-```yaml
-edges:
-  - from: login-action
-    to: login-command
-    type: triggers
-    path: both
+## 順不同と並列
 
-  - from: account-decision
-    to: login-rejected
-    type: produces
-    path: exception
-    label: NO
-```
+ユーザーがどの順番でも入力できる操作は <code>unordered</code>、同時に実行可能なシステム処理は <code>parallel</code> として区別します。
+
+~~~yaml
+groups:
+  credential-fields:
+    label: IDとパスワードはどちらからでも入力できる
+    mode: unordered
+    members: [member-id-input, password-input]
+~~~
+
+所属は <code>groups.*.members</code> だけで管理します。子ノード側への重複指定は不要です。
+
+~~~yaml
+- id: member-id-input
+  track: member-id
+  type: action
+  path: both
+  title: 会員IDを入力する
+  # technical / detail は通常のノードと同じ
+~~~
+
+複数の入力がすべて揃ってから有効になるノードには <code>join: all</code> を指定します。
+
+~~~yaml
+- id: login-form-ready
+  track: form-state
+  join: all
+  type: state
+  path: happy
+  title: ログイン操作を有効にする
+~~~
+
+<code>join: all</code> には2本以上の入力エッジが必要です。<code>join: any</code> は、いずれか1本の到達で進めることを明示します。
+
+## 自動配置
+
+<code>column</code> や座標は仕様に記述しません。ビューがエッジから段階を自動計算します。
+
+1. 入力エッジを持たないノードをSTAGE 1に置く
+2. 後続ノードを依存元の次のSTAGEへ置く
+3. 複数の依存元がある場合は最も遅いSTAGEに合わせる
+4. <code>loop: true</code> の戻り線は配置計算から除外する
+5. 同じSTAGEではYAMLのノード記述順を維持する
+
+したがって、途中へノードを追加しても後続ノードの番号変更は不要です。
+
+## Node type
 
 | type | 意味 |
 |---|---|
-| `sequence` | ユーザー体験上の順序 |
-| `triggers` | 次の処理を開始する |
-| `produces` | イベントを発生させる |
-| `reads` | 状態を参照する |
-| `writes` | 状態を更新する |
-| `requests` | 情報や処理を要求する |
-| `responds` | 要求へ応答する |
-| `transitions` | 画面や状態を遷移する |
-| `returns` | 前の操作へ戻る |
-| `enables` | 条件成立によって操作や状態を有効にする |
+| <code>view</code> | ユーザーまたは連携先へ見せる状態 |
+| <code>action</code> | ユーザーの操作 |
+| <code>command</code> | システムへの意図 |
+| <code>integration</code> | 外部システムとの連携 |
+| <code>decision</code> | ルールによる判断 |
+| <code>event</code> | 確定した事実 |
+| <code>state</code> | 保存または導出された状態 |
 
-戻り線を下側へ迂回させる場合は `loop: true` を指定します。分岐条件など短い表示には `label` を使用します。
+## Edge
+
+~~~yaml
+edges:
+  - from: account-decision
+    to: profile-query
+    type: requests
+    path: happy
+    label: VALID
+~~~
+
+| type | 意味 |
+|---|---|
+| <code>sequence</code> | ユーザー体験上の順序 |
+| <code>triggers</code> | 次の処理を開始する |
+| <code>produces</code> | イベントや結果を発生させる |
+| <code>reads</code> | 状態を参照する |
+| <code>writes</code> | 状態を更新する |
+| <code>requests</code> | 情報や処理を要求する |
+| <code>responds</code> | 要求へ応答する |
+| <code>transitions</code> | 画面や状態を遷移する |
+| <code>returns</code> | 前の操作へ戻る |
+| <code>enables</code> | 条件成立によって操作を有効にする |
+
+再入力や再試行の戻り線には <code>loop: true</code> を指定します。
 
 ## 読み込みと検証
 
 - 画面の「YAMLを開く」でローカルファイルを選択できます。
-- YAMLまたはJSONファイルを画面へドラッグ&ドロップできます。
-- `?spec=/path/to/spec.yaml` でサーバー上のファイルを初期表示できます。
-- 読み込み失敗時はエラー箇所を表示し、現在のビューは維持します。
-- 実行時に必須項目、ID重複、レーン・ノード・ストーリーの参照切れを検証します。
+- YAMLまたはJSONを画面へドラッグ&ドロップできます。
+- <code>?spec=/path/to/spec.yaml</code> でサーバー上のファイルを指定できます。
+- v2以前、ID重複、参照切れ、不正なgroup、entry、exit、joinを検証します。
+
+フローをどの層へ置くかの判断は、[階層構造の設計ガイド](./hierarchy-guidelines.md)を参照してください。

@@ -563,18 +563,6 @@ button {
   white-space: nowrap;
 }
 
-.level-select {
-  flex: 0 0 auto;
-  height: 32px;
-  padding: 0 28px 0 10px;
-  border: 1px solid var(--ink-200);
-  border-radius: 7px;
-  background-color: var(--surface);
-  color: var(--ink-800);
-  cursor: pointer;
-  font-size: 10px;
-}
-
 .quiet-button {
   gap: 7px;
   height: 32px;
@@ -958,6 +946,8 @@ button {
 .lane-system .lane-stamp { color: var(--blue); background: var(--blue-soft); }
 .lane-external .lane-stamp { color: var(--amber); background: var(--amber-soft); }
 .lane-resource .lane-stamp { color: var(--plum); background: var(--plum-soft); }
+.lane-experience .lane-stamp { color: var(--cyan); background: var(--cyan-soft); }
+.lane-exception .lane-stamp { color: var(--coral); background: var(--coral-soft); }
 
 .node-slot {
   position: relative;
@@ -1174,6 +1164,16 @@ button {
   animation: cutaway-in 200ms ease-out both;
 }
 
+.flow-node.compound-node.kind-interaction {
+  border-color: #70c9c7;
+  background: #f5fcfc;
+}
+
+.flow-node.compound-node.kind-orchestration {
+  border-color: #96aaf0;
+  background: #f8faff;
+}
+
 .flow-node.compound-node:hover {
   border-color: #7e96e8;
   transform: none;
@@ -1271,6 +1271,60 @@ button {
   text-transform: uppercase;
 }
 
+.subflow-kind {
+  color: var(--blue);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.kind-interaction .subflow-kind {
+  color: var(--cyan);
+}
+
+.flow-group-strip {
+  position: sticky;
+  left: 0;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 7px 10px;
+  border-bottom: 1px dashed #bdc9e8;
+  background: #f8faff;
+}
+
+.flow-group-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 8px;
+  border: 1px solid #b8c5ef;
+  border-radius: 999px;
+  background: white;
+  color: var(--ink-700);
+  font-size: 7px;
+}
+
+.flow-group-badge b {
+  color: var(--blue);
+  font-family: var(--utility-font);
+  font-size: 7px;
+  letter-spacing: 0.08em;
+}
+
+.flow-group-badge.mode-unordered {
+  border-color: #8bd3d1;
+  background: var(--cyan-soft);
+}
+
+.flow-group-badge.mode-unordered b {
+  color: #08797b;
+}
+
+.flow-group-badge.mode-parallel {
+  background: var(--blue-soft);
+}
+
 .subflow-grid {
   --sub-columns: 6;
   --sub-tracks: 3;
@@ -1279,6 +1333,16 @@ button {
   grid-template-columns: 82px repeat(var(--sub-columns), minmax(104px, 1fr));
   grid-template-rows: repeat(var(--sub-tracks), 88px);
   min-width: calc(82px + (var(--sub-columns) * 108px));
+}
+
+.subflow-board.kind-interaction {
+  border-color: #a8dbda;
+}
+
+.subflow-board.kind-interaction .subflow-track-code {
+  border-color: #8ccfcd;
+  background: var(--cyan-soft);
+  color: #08797b;
 }
 
 .subflow-track {
@@ -1846,6 +1910,20 @@ button {
 .legend-shape.type-command { background: var(--blue); }
 .legend-shape.type-event { border-radius: 50%; background: var(--coral); }
 .legend-shape.type-state { border-radius: 50% / 25%; background: var(--plum); }
+.legend-shape.type-interaction,
+.legend-shape.type-orchestration {
+  display: grid;
+  width: 17px;
+  height: 17px;
+  place-items: center;
+  border: 1px solid currentColor;
+  background: white;
+  color: var(--cyan);
+  font-family: var(--utility-font);
+  font-size: 7px;
+  font-weight: 700;
+}
+.legend-shape.type-orchestration { color: var(--blue); }
 
 .legend-note {
   margin: 15px 0 0;
@@ -1946,33 +2024,6 @@ button {
   font-family: var(--utility-font);
   font-size: 9px;
   line-height: 1.8;
-}
-
-body.level-1 .node-type,
-body.level-1 .node-detail {
-  display: none;
-}
-
-body.level-1 .flow-node {
-  min-height: 52px;
-}
-
-body.level-1 .node-main {
-  min-height: 50px;
-  padding: 12px;
-}
-
-body.level-1 .flow-node.compound-node {
-  min-height: 300px;
-}
-
-body.level-1 .node-main > strong,
-body.level-1 .subflow-node > strong {
-  font-size: 11px;
-}
-
-body.level-3 .node-detail {
-  color: var(--blue-deep);
 }
 
 @media (max-width: 1240px) {
@@ -2083,8 +2134,7 @@ body.level-3 .node-detail {
     display: none;
   }
 
-  .segmented-control,
-  .level-select { flex: 0 0 auto; }
+  .segmented-control { flex: 0 0 auto; }
   .flow-section { height: calc(100% - 56px); padding-top: 16px; }
   .flow-intro { padding-inline: 16px; }
   .flow-intro h2 { font-size: 14px; }

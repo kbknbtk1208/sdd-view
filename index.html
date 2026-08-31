@@ -95,19 +95,10 @@
 
           <div class="toolbar-divider" aria-hidden="true"></div>
 
-          <label class="select-label" for="zoom-level">表示レベル</label>
-          <select id="zoom-level" class="level-select">
-            <option value="1">L1 ユーザーフロー</option>
-            <option value="2" selected>L2 振る舞い</option>
-            <option value="3">L3 技術フロー</option>
-          </select>
-
-          <div class="toolbar-divider" aria-hidden="true"></div>
-
-          <span class="select-label">詳細の深さ</span>
-          <div class="segmented-control depth-control" id="depth-control" aria-label="詳細の深さ">
-            <button type="button" data-depth="overview" class="is-active" aria-pressed="true">全体</button>
-            <button type="button" data-depth="expanded" aria-pressed="false">展開</button>
+          <span class="select-label">表示する層</span>
+          <div class="segmented-control depth-control" id="depth-control" aria-label="表示する層">
+            <button type="button" data-depth="overview" class="is-active" aria-pressed="true">体験</button>
+            <button type="button" data-depth="expanded" aria-pressed="false">実現</button>
             <button type="button" data-depth="focus" aria-pressed="false">フォーカス</button>
           </div>
 
@@ -133,18 +124,18 @@
         <section class="flow-section" aria-labelledby="flow-title">
           <div class="flow-intro">
             <div>
-              <p class="eyebrow" id="scenario-eyebrow">SCENARIO</p>
+              <p class="eyebrow" id="scenario-eyebrow">EXPERIENCE</p>
               <h2 id="flow-title">仕様を読み込み中</h2>
               <div class="focus-breadcrumb" id="focus-breadcrumb" hidden>
-                <button type="button" id="focus-back-button" aria-label="全体フローに戻る">← 全体フロー</button>
+                <button type="button" id="focus-back-button" aria-label="Experience Flowに戻る">← Experience</button>
                 <span aria-hidden="true">/</span>
                 <strong id="focus-title"></strong>
               </div>
             </div>
             <div class="flow-summary" id="flow-summary">
-              <span><b>11</b> ノード</span>
-              <span><b>4</b> レーン</span>
-              <span><b>1</b> 判断</span>
+              <span><b>0</b> ノード</span>
+              <span><b>UX</b> Experience</span>
+              <span><b>0</b> 実現ノード</span>
             </div>
           </div>
 
@@ -154,7 +145,7 @@
             <span>USER VALUE</span>
           </div>
 
-          <div class="flow-scroll" id="flow-scroll" tabindex="0" aria-label="ログインの振る舞いフロー。横方向にスクロールできます">
+          <div class="flow-scroll" id="flow-scroll" tabindex="0" aria-label="ユーザー体験と実現フロー。横方向にスクロールできます">
             <div class="flow-canvas" id="flow-canvas">
               <svg class="edge-layer" id="edge-layer" aria-hidden="true">
                 <defs>
@@ -199,8 +190,10 @@
         <span class="legend-shape type-command"></span><p><b>コマンド</b> システムへの意図</p>
         <span class="legend-shape type-event"></span><p><b>イベント</b> 確定した事実</p>
         <span class="legend-shape type-state"></span><p><b>状態</b> 保存された情報</p>
+        <span class="legend-shape type-interaction">I</span><p><b>Interaction</b> 画面内の入力・検証・状態</p>
+        <span class="legend-shape type-orchestration">O</span><p><b>Orchestration</b> システム間の要求・判断・保存</p>
       </div>
-      <p class="legend-note">線は因果関係を表します。ノードを選ぶと、詳細な前提・結果・関連仕様を確認できます。</p>
+      <p class="legend-note">Experienceはユーザーから見える流れです。実現フローを開くと、InteractionまたはOrchestrationを確認できます。</p>
     </div>
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
